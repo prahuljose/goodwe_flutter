@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'station_monitor.dart';
 
 /// Realistic mock data for a 10 kW rooftop system in Kerala.
@@ -103,6 +104,35 @@ class DemoData {
       uvIndex: uv[j],
       pop: pop[j],
     );
+  }
+
+  /// Realistic bell-curve PAC samples for a 10 kW system on a sunny Kerala day.
+  /// 288 entries at 5-minute intervals covering the full 24 h period.
+  static List<PacSample> pacSamples() {
+    final today = DateTime.now();
+    final base = DateTime(today.year, today.month, today.day);
+
+    return List.generate(288, (i) {
+      final time = base.add(Duration(minutes: i * 5));
+      final hour = time.hour + time.minute / 60.0;
+
+      // Generation window: 06:00 → 18:30
+      if (hour < 6.0 || hour > 18.5) {
+        return PacSample(time: time, pac: 0);
+      }
+
+      // Gaussian centred at 12:30, σ = 3 h, peak ≈ 9 500 W
+      const peakW = 9500.0;
+      const mu = 12.5;
+      const sigma = 3.0;
+      final z = (hour - mu) / sigma;
+      final raw = peakW * math.exp(-0.5 * z * z);
+
+      // Light cloud flutter — ±8 % jitter using a deterministic pseudo-random
+      final jitter = 1.0 + 0.08 * math.sin(i * 7.3 + 1.1) * math.cos(i * 3.1);
+
+      return PacSample(time: time, pac: (raw * jitter).clamp(0.0, peakW));
+    });
   }
 
   static String _fmt(DateTime d) =>

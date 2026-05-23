@@ -176,7 +176,7 @@ class _ChartPainter extends CustomPainter {
   final PacSample peak;
 
   // Exposed as constants so the parent widget can use them for hit-testing
-  static const lp = 44.0; // left pad  (y-axis labels)
+  static const lp = 52.0; // left pad  (y-axis labels)
   static const rp = 12.0; // right pad
   static const tp = 14.0; // top pad
   static const bp = 28.0; // bottom pad (x-axis labels)
@@ -207,7 +207,7 @@ class _ChartPainter extends CustomPainter {
     _drawXLabels(canvas, chart);
     _drawArea(canvas, chart, pts);
     _drawLine(canvas, pts);
-    _drawPeakMarker(canvas, pts);
+    _drawPeakMarker(canvas, chart, pts);
     if (hoverIdx != null) _drawHover(canvas, chart, pts);
   }
 
@@ -320,35 +320,28 @@ class _ChartPainter extends CustomPainter {
     );
   }
 
-  // ── Peak dot + dashed drop-line ────────────────────────────────────────────
+  // ── Peak dot + dashed horizontal peak-line ────────────────────────────────
 
-  void _drawPeakMarker(Canvas canvas, List<Offset> pts) {
+  void _drawPeakMarker(Canvas canvas, Rect chart, List<Offset> pts) {
     final idx = samples.indexWhere((s) => s.pac == peak.pac);
     if (idx < 0) return;
     final pp = pts[idx];
 
-    // Dashed vertical drop
+    // Dashed horizontal line across the full chart width at peak height
     final dashPaint = Paint()
-      ..color = AppColors.accent.withValues(alpha: 0.25)
+      ..color = AppColors.accent.withValues(alpha: 0.30)
       ..strokeWidth = 1;
-    double y = pp.dy + 8;
-    while (y < pts.first.dy.clamp(pp.dy, double.infinity) ||
-        y < canvas.getSaveCount().toDouble()) {
-      // Simple vertical dashes from peak down to bottom of last point area
-      break; // handled below
-    }
-    // Re-implement cleanly
-    y = pp.dy + 8;
-    final bottom =
-        pts.reduce((a, b) => a.dy > b.dy ? a : b).dy + 20;
-    while (y < bottom) {
+
+    double x = chart.left;
+    while (x < chart.right) {
       canvas.drawLine(
-          Offset(pp.dx, y), Offset(pp.dx, math.min(y + 4, bottom)), dashPaint);
-      y += 8;
+        Offset(x, pp.dy),
+        Offset(math.min(x + 4, chart.right), pp.dy),
+        dashPaint,
+      );
+      x += 8;
     }
 
-    canvas.drawCircle(pp, 5.5, Paint()..color = AppColors.accent);
-    canvas.drawCircle(pp, 3, Paint()..color = Colors.white);
   }
 
   // ── Hover crosshair + tooltip ──────────────────────────────────────────────

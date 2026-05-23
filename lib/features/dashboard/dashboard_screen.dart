@@ -13,6 +13,7 @@ import 'widgets/environmental_card.dart';
 import 'widgets/inverter_card.dart';
 import 'widgets/insights_card.dart';
 import 'widgets/api_log_sheet.dart';
+import 'widgets/power_chart.dart';
 import '../../data/remote/api_logger.dart';
 import '../../data/models/demo_data.dart';
 
@@ -28,6 +29,8 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
   StationMonitor? _monitor;
+  List<PacSample> _pacSamples = [];
+  String _pacDateLabel = 'Today';
   bool _isLoading = true;
   SemsError? _error;
   double? _earningsRate;
@@ -67,7 +70,11 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (auth.isDemoMode) {
         await Future.delayed(const Duration(milliseconds: 800));
         if (mounted) {
-          setState(() => _monitor = DemoData.stationMonitor());
+          setState(() {
+            _monitor = DemoData.stationMonitor();
+            _pacSamples = DemoData.pacSamples();
+            _pacDateLabel = 'Today';
+          });
           _staggerCtrl.forward();
         }
         return;
@@ -112,8 +119,21 @@ class _DashboardScreenState extends State<DashboardScreen>
             auth.currentSession!, _stationId);
       }
 
+      // Fetch intra-day PAC chart (non-critical — chart simply won't show on error)
+      List<PacSample> pacSamples = [];
+      try {
+        pacSamples = await stationRepo.fetchPacByDay(
+            auth.currentSession!, _stationId, DateTime.now());
+      } catch (_) {
+        // Silently swallow — the power curve card is supplemental
+      }
+
       if (mounted) {
-        setState(() => _monitor = monitor);
+        setState(() {
+          _monitor = monitor;
+          _pacSamples = pacSamples;
+          _pacDateLabel = 'Today';
+        });
         _staggerCtrl.forward();
       }
     } on SemsAuthError {
@@ -397,10 +417,22 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
                 const SizedBox(height: 16),
 
+                // Intra-day power curve
+                if (_pacSamples.isNotEmpty)
+                  _Staggered(
+                    ctrl: _staggerCtrl,
+                    index: 2,
+                    child: PowerCurveCard(
+                      samples: _pacSamples,
+                      dateLabel: _pacDateLabel,
+                    ),
+                  ),
+                if (_pacSamples.isNotEmpty) const SizedBox(height: 16),
+
                 // Income KPIs
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 2,
+                  index: 3,
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -445,7 +477,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 const SizedBox(height: 10),
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 2,
+                  index: 3,
                   child: Row(children: [
                     Expanded(
                       child: KpiCard(
@@ -481,7 +513,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 // Monthly performance
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 3,
+                  index: 4,
                   child: MonthlyPerformanceCard(
                     monthKwh: m.kpi.monthKwh,
                     capacityKw: m.info.capacity,
@@ -494,7 +526,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 // Today's energy insights
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 4,
+                  index: 5,
                   child: TodayInsightsCard(todayKwh: m.kpi.todayKwh),
                 ),
                 const SizedBox(height: 16),
@@ -502,7 +534,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 // CO2 & lifetime insights
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 5,
+                  index: 6,
                   child: Co2InsightsCard(
                     co2Tonnes: m.environmental.co2Tonnes,
                     totalKwh: m.kpi.totalKwh,
@@ -514,7 +546,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 // Environmental impact
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 6,
+                  index: 7,
                   child: EnvironmentalCard(data: m.environmental),
                 ),
                 const SizedBox(height: 16),
@@ -522,7 +554,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 // Weather forecast
                 _Staggered(
                   ctrl: _staggerCtrl,
-                  index: 7,
+                  index: 8,
                   child: WeatherSection(forecast: m.forecast),
                 ),
                 const SizedBox(height: 16),
@@ -531,7 +563,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 if (inverter != null)
                   _Staggered(
                     ctrl: _staggerCtrl,
-                    index: 8,
+                    index: 9,
                     child: InverterCard(inverter: inverter),
                   ),
                 const SizedBox(height: 16),
