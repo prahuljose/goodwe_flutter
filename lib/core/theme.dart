@@ -13,39 +13,42 @@ class AppColors {
   static const divider = Color(0xFF1E2D45);
 }
 
+const _outfit = 'Outfit';
+
 class AppTheme {
   static ThemeData get dark {
     return ThemeData(
       brightness: Brightness.dark,
+      fontFamily: _outfit,
       scaffoldBackgroundColor: AppColors.background,
       colorScheme: const ColorScheme.dark(
         primary: AppColors.accent,
         surface: AppColors.card,
-        background: AppColors.background,
       ),
       appBarTheme: const AppBarTheme(
         backgroundColor: AppColors.background,
         elevation: 0,
         titleTextStyle: TextStyle(
+          fontFamily: _outfit,
           color: AppColors.textPrimary,
           fontSize: 18,
           fontWeight: FontWeight.w600,
         ),
         iconTheme: IconThemeData(color: AppColors.textPrimary),
       ),
-      cardTheme: const CardTheme(
+      cardTheme: const CardThemeData(
         color: AppColors.card,
         elevation: 0,
         margin: EdgeInsets.zero,
       ),
       textTheme: const TextTheme(
-        headlineLarge: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
-        headlineMedium: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
-        titleLarge: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600),
-        titleMedium: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w500),
-        bodyLarge: TextStyle(color: AppColors.textPrimary),
-        bodyMedium: TextStyle(color: AppColors.textSecondary),
-        labelMedium: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        headlineLarge: TextStyle(fontFamily: _outfit, color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+        headlineMedium: TextStyle(fontFamily: _outfit, color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+        titleLarge: TextStyle(fontFamily: _outfit, color: AppColors.textPrimary, fontWeight: FontWeight.w600),
+        titleMedium: TextStyle(fontFamily: _outfit, color: AppColors.textPrimary, fontWeight: FontWeight.w500),
+        bodyLarge: TextStyle(fontFamily: _outfit, color: AppColors.textPrimary),
+        bodyMedium: TextStyle(fontFamily: _outfit, color: AppColors.textSecondary),
+        labelMedium: TextStyle(fontFamily: _outfit, color: AppColors.textSecondary, fontSize: 12),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -62,8 +65,8 @@ class AppTheme {
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: AppColors.accent),
         ),
-        labelStyle: const TextStyle(color: AppColors.textSecondary),
-        hintStyle: const TextStyle(color: AppColors.textSecondary),
+        labelStyle: const TextStyle(fontFamily: _outfit, color: AppColors.textSecondary),
+        hintStyle: const TextStyle(fontFamily: _outfit, color: AppColors.textSecondary),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
@@ -71,7 +74,7 @@ class AppTheme {
           foregroundColor: Colors.black,
           minimumSize: const Size.fromHeight(52),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontFamily: _outfit, fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
     );
