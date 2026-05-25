@@ -154,10 +154,8 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
     final visible = _visible;
     final peak    = widget.isLoading ? null : _peak;
 
-    // Always render the card shell when loading so navigation stays visible
-    if (!widget.isLoading && (visible.isEmpty || peak == null || peak.pac == 0)) {
-      return const SizedBox.shrink();
-    }
+    final isEmpty = !widget.isLoading &&
+        (visible.isEmpty || peak == null || peak.pac == 0);
 
     return Container(
       decoration: BoxDecoration(
@@ -176,6 +174,27 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
                 child: CircularProgressIndicator(
                   color: AppColors.accent,
                   strokeWidth: 2,
+                ),
+              ),
+            )
+          else if (isEmpty)
+            const SizedBox(
+              height: 160,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.nights_stay_outlined,
+                        color: AppColors.textSecondary, size: 28),
+                    SizedBox(height: 8),
+                    Text(
+                      'No generation data for this day',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             )

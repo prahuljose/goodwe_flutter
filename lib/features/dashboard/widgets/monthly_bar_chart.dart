@@ -51,6 +51,15 @@ class _MonthlyEnergyBarChartCardState
       ? null
       : widget.entries.reduce((a, b) => a.kwh > b.kwh ? a : b);
 
+  int get _bestIdx {
+    if (widget.entries.isEmpty) return -1;
+    int best = 0;
+    for (int i = 1; i < widget.entries.length; i++) {
+      if (widget.entries[i].kwh > widget.entries[best].kwh) best = i;
+    }
+    return best;
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   static const _monthAbbr = [
@@ -147,7 +156,7 @@ class _MonthlyEnergyBarChartCardState
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6),
             child: Text(
-              '${widget.year}',
+              widget.year.toString(),
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 12,
@@ -187,7 +196,7 @@ class _MonthlyEnergyBarChartCardState
           if (best != null)
             _StatChip(
               label: 'Best',
-              value: '${best.kwh.toStringAsFixed(0)} kWh',
+              value: '${_monthAbbr[best.date.month - 1]}  ·  ${best.kwh.toStringAsFixed(0)} kWh',
               color: const Color(0xFF818CF8),
             ),
         ],
@@ -199,7 +208,9 @@ class _MonthlyEnergyBarChartCardState
     final today = DateTime.now();
 
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
+      // Left padding gives breathing room between y-axis labels and card edge.
+      // Top padding leaves space for the extrapolation label drawn above bars.
+      padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
       child: LayoutBuilder(builder: (ctx, constraints) {
         return GestureDetector(
           onTapDown:  (d) => _onTap(d.localPosition.dx, constraints.maxWidth),
@@ -207,7 +218,7 @@ class _MonthlyEnergyBarChartCardState
           onTapUp:    (_) => setState(() => _selectedIdx = null),
           onPanEnd:   (_) => setState(() => _selectedIdx = null),
           child: SizedBox(
-            height: 140,
+            height: 155,
             width: double.infinity,
             child: CustomPaint(
               painter: _BarChartPainter(
@@ -215,6 +226,7 @@ class _MonthlyEnergyBarChartCardState
                 today:       today,
                 selectedIdx: _selectedIdx,
                 average:     _average,
+                bestIdx:     _bestIdx,
               ),
             ),
           ),
@@ -229,7 +241,6 @@ class _MonthlyEnergyBarChartCardState
       return const SizedBox.shrink();
     }
     final entry = widget.entries[_selectedIdx!];
-    final today = DateTime.now();
     final isCurrent = entry.date.year == DateTime.now().year &&
         entry.date.month == DateTime.now().month;
 
@@ -273,10 +284,11 @@ class _BarChartPainter extends CustomPainter {
   final DateTime today;
   final int? selectedIdx;
   final double average;
+  final int bestIdx;
 
   static const lp = 44.0; // left pad (y-axis labels)
   static const rp = 8.0;
-  static const tp = 8.0;
+  static const tp = 20.0; // extra headroom for the extrapolation label
   static const bp = 22.0; // bottom pad (x-axis month labels)
 
   static const _monthAbbr = [
@@ -289,7 +301,20 @@ class _BarChartPainter extends CustomPainter {
     required this.today,
     required this.selectedIdx,
     required this.average,
+    required this.bestIdx,
   });
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Full-month extrapolated kWh for the current (partial) month.
+  /// Returns [e.kwh] unchanged for every other entry or if ≥ 95 % through.
+  double _estKwh(DailyEnergy e) {
+    if (e.date.year != today.year || e.date.month != today.month) return e.kwh;
+    final daysInMonth = DateTime(today.year, today.month + 1, 0).day;
+    final fraction    = today.day / daysInMonth;
+    if (fraction >= 0.95 || e.kwh <= 0) return e.kwh;
+    return e.kwh / fraction;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -318,7 +343,7 @@ class _BarChartPainter extends CustomPainter {
       // Show as MWh when ≥ 1000
       final label = kwh >= 1000
           ? '${(kwh / 1000).toStringAsFixed(1)}M'
-          : '${kwh.toStringAsFixed(0)}';
+          : kwh.toStringAsFixed(0);
       _label(canvas, label, Offset(2, y - 6), maxWidth: lp - 6);
     }
   }
@@ -332,6 +357,8 @@ class _BarChartPainter extends CustomPainter {
     for (int i = 0; i < n; i++) {
       final e          = entries[i];
       final isCurrent  = e.date.year == today.year && e.date.month == today.month;
+      // Best-month highlight only applies to completed (non-current) months
+      final isBest     = !isCurrent && i == bestIdx;
       final isSelected = i == selectedIdx;
       final kwh        = e.kwh;
       final barH       = (kwh / scaledMax) * chart.height;
@@ -339,13 +366,18 @@ class _BarChartPainter extends CustomPainter {
       final barLeft  = chart.left + i * slotW + gap;
       final barRight = barLeft + barW;
       final barTop   = chart.bottom - barH;
+      final radius   = math.min(barW / 2, 4.0);
 
-      Color color = isCurrent ? AppColors.accent : AppColors.green;
-      double alpha = isSelected ? 1.0 : 0.80;
-      color = color.withValues(alpha: alpha);
+      // ── Bar colour ──────────────────────────────────────────────────────────
+      final Color baseColor = isCurrent
+          ? AppColors.accent
+          : isBest
+              ? const Color(0xFF818CF8) // purple for best past month
+              : AppColors.green;
+      final color = baseColor.withValues(alpha: isSelected ? 1.0 : 0.80);
 
+      // ── Draw solid bar (or zero-stub) ───────────────────────────────────────
       if (barH < 1.5) {
-        // Stub for zero / near-zero months
         canvas.drawRRect(
           RRect.fromRectAndRadius(
             Rect.fromLTRB(barLeft, chart.bottom - 2, barRight, chart.bottom),
@@ -353,33 +385,58 @@ class _BarChartPainter extends CustomPainter {
           ),
           Paint()..color = AppColors.divider.withValues(alpha: 0.3),
         );
-        continue;
-      }
-
-      final radius = math.min(barW / 2, 4.0);
-      canvas.drawRRect(
-        RRect.fromRectAndCorners(
-          Rect.fromLTRB(barLeft, barTop, barRight, chart.bottom),
-          topLeft:  Radius.circular(radius),
-          topRight: Radius.circular(radius),
-        ),
-        Paint()..color = color,
-      );
-
-      // Selection ring
-      if (isSelected) {
+      } else {
         canvas.drawRRect(
           RRect.fromRectAndCorners(
-            Rect.fromLTRB(barLeft - 0.75, barTop - 0.75,
-                barRight + 0.75, chart.bottom + 0.75),
-            topLeft:  Radius.circular(radius + 0.75),
-            topRight: Radius.circular(radius + 0.75),
+            Rect.fromLTRB(barLeft, barTop, barRight, chart.bottom),
+            topLeft:  Radius.circular(radius),
+            topRight: Radius.circular(radius),
           ),
-          Paint()
-            ..color     = color
-            ..style     = PaintingStyle.stroke
-            ..strokeWidth = 1.0,
+          Paint()..color = color,
         );
+
+        if (isSelected) {
+          canvas.drawRRect(
+            RRect.fromRectAndCorners(
+              Rect.fromLTRB(barLeft - 0.75, barTop - 0.75,
+                  barRight + 0.75, chart.bottom + 0.75),
+              topLeft:  Radius.circular(radius + 0.75),
+              topRight: Radius.circular(radius + 0.75),
+            ),
+            Paint()
+              ..color       = color
+              ..style       = PaintingStyle.stroke
+              ..strokeWidth = 1.0,
+          );
+        }
+      }
+
+      // ── Estimate label (current partial month only) ─────────────────────────
+      // Shows the projected full-month total above the bar in purple so it
+      // reads as a forecast value, distinct from the solid orange bar.
+      if (isCurrent) {
+        final daysInMonth = DateTime(today.year, today.month + 1, 0).day;
+        final fraction    = today.day / daysInMonth;
+        if (fraction < 0.95 && kwh > 0) {
+          final estKwh  = kwh / fraction;
+          final estLabel = estKwh >= 1000
+              ? '~${(estKwh / 1000).toStringAsFixed(1)}M'
+              : '~${estKwh.toStringAsFixed(0)}';
+
+          // Centre the label horizontally over the bar
+          const labelW = 44.0;
+          final labelX = barLeft + barW / 2 - labelW / 2;
+          final labelY = math.max(tp + 1.0, (barH < 1.5 ? chart.bottom - 2.0 : barTop) - 12.0);
+
+          _label(
+            canvas,
+            estLabel,
+            Offset(labelX, labelY),
+            maxWidth: labelW,
+            align: TextAlign.center,
+            color: const Color(0xFF818CF8), // purple — distinct from the orange bar
+          );
+        }
       }
     }
   }
@@ -420,12 +477,12 @@ class _BarChartPainter extends CustomPainter {
   }
 
   void _label(Canvas canvas, String text, Offset offset,
-      {double maxWidth = 40, TextAlign align = TextAlign.right}) {
+      {double maxWidth = 40, TextAlign align = TextAlign.right, Color? color}) {
     (TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(
-          color: Color(0xFF4B5E7A),
+        style: TextStyle(
+          color: color ?? const Color(0xFF4B5E7A),
           fontSize: 9,
           fontFamily: 'Outfit',
         ),
@@ -440,7 +497,8 @@ class _BarChartPainter extends CustomPainter {
   bool shouldRepaint(_BarChartPainter old) =>
       old.entries != entries ||
       old.selectedIdx != selectedIdx ||
-      old.average != average;
+      old.average != average ||
+      old.bestIdx != bestIdx;
 }
 
 // ─── Helper widgets ────────────────────────────────────────────────────────

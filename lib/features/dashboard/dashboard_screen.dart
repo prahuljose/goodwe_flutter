@@ -613,21 +613,20 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
                 const SizedBox(height: 16),
 
-                // Intra-day power curve
-                if (_pacSamples.isNotEmpty || _isPacLoading)
-                  _Staggered(
-                    ctrl: _staggerCtrl,
-                    index: 2,
-                    child: PowerCurveCard(
-                      samples: _pacSamples,
-                      dateLabel: _pacDateLabel,
-                      isLoading: _isPacLoading,
-                      onPrevDay: _onPrevDay,
-                      onNextDay: _isPacToday ? null : _onNextDay,
-                    ),
+                // Intra-day power curve — always shown so the user can
+                // navigate back even when today has no generation yet.
+                _Staggered(
+                  ctrl: _staggerCtrl,
+                  index: 2,
+                  child: PowerCurveCard(
+                    samples: _pacSamples,
+                    dateLabel: _pacDateLabel,
+                    isLoading: _isPacLoading,
+                    onPrevDay: _onPrevDay,
+                    onNextDay: _isPacToday ? null : _onNextDay,
                   ),
-                if (_pacSamples.isNotEmpty || _isPacLoading)
-                  const SizedBox(height: 16),
+                ),
+                const SizedBox(height: 16),
 
                 // Annual energy bar chart
                 if (!_isLoading)
