@@ -29,10 +29,22 @@ class PowerCurveCard extends StatefulWidget {
   final List<PacSample> samples;
   final String dateLabel;
 
+  /// Called when the user taps the left (previous day) arrow.
+  final VoidCallback onPrevDay;
+
+  /// null when showing today — disables the right (next day) arrow.
+  final VoidCallback? onNextDay;
+
+  /// Shows a loading spinner in place of the chart while fetching a new day.
+  final bool isLoading;
+
   const PowerCurveCard({
     super.key,
     required this.samples,
     required this.dateLabel,
+    required this.onPrevDay,
+    this.onNextDay,
+    this.isLoading = false,
   });
 
   @override
@@ -140,9 +152,10 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
-    final peak = _peak;
+    final peak    = widget.isLoading ? null : _peak;
 
-    if (visible.isEmpty || peak == null || peak.pac == 0) {
+    // Always render the card shell when loading so navigation stays visible
+    if (!widget.isLoading && (visible.isEmpty || peak == null || peak.pac == 0)) {
       return const SizedBox.shrink();
     }
 
@@ -156,30 +169,42 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildHeader(peak),
-          LayoutBuilder(builder: (ctx, constraints) {
-            return GestureDetector(
-              onTapDown: (d) =>
-                  _setHover(d.localPosition.dx, constraints.maxWidth, visible),
-              onPanUpdate: (d) =>
-                  _setHover(d.localPosition.dx, constraints.maxWidth, visible),
-              onPanEnd: (_) => setState(() => _hoverIdx = null),
-              onTapUp: (_) => setState(() => _hoverIdx = null),
-              child: SizedBox(
-                height: 200,
-                width: double.infinity,
-                child: CustomPaint(
-                  painter: _ChartPainter(
-                    samples: visible,
-                    hoverIdx: _hoverIdx,
-                    peak: peak,
-                    anomalies: _anomalies,
-                  ),
+          if (widget.isLoading)
+            const SizedBox(
+              height: 200,
+              child: Center(
+                child: CircularProgressIndicator(
+                  color: AppColors.accent,
+                  strokeWidth: 2,
                 ),
               ),
-            );
-          }),
-          _buildFooter(visible),
-          _buildAnomalyInsights(_anomalies),
+            )
+          else ...[
+            LayoutBuilder(builder: (ctx, constraints) {
+              return GestureDetector(
+                onTapDown: (d) =>
+                    _setHover(d.localPosition.dx, constraints.maxWidth, visible),
+                onPanUpdate: (d) =>
+                    _setHover(d.localPosition.dx, constraints.maxWidth, visible),
+                onPanEnd: (_) => setState(() => _hoverIdx = null),
+                onTapUp: (_) => setState(() => _hoverIdx = null),
+                child: SizedBox(
+                  height: 200,
+                  width: double.infinity,
+                  child: CustomPaint(
+                    painter: _ChartPainter(
+                      samples: visible,
+                      hoverIdx: _hoverIdx,
+                      peak: peak!,
+                      anomalies: _anomalies,
+                    ),
+                  ),
+                ),
+              );
+            }),
+            _buildFooter(visible),
+            _buildAnomalyInsights(_anomalies),
+          ],
           const SizedBox(height: 14),
         ],
       ),
@@ -289,24 +314,48 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
     );
   }
 
-  Widget _buildHeader(PacSample peak) {
+  Widget _buildHeader(PacSample? peak) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 0),
       child: Row(
         children: [
           const Icon(Icons.show_chart_rounded,
               color: AppColors.accent, size: 16),
           const SizedBox(width: 8),
-          Expanded(
+          const Text(
+            'Power Curve',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // ── Day navigation ─────────────────────────────────────────────
+          _NavArrow(
+            icon: Icons.chevron_left_rounded,
+            onTap: widget.isLoading ? null : widget.onPrevDay,
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Text(
-              'Power Curve  ·  ${widget.dateLabel}',
+              widget.dateLabel,
               style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
+          _NavArrow(
+            icon: Icons.chevron_right_rounded,
+            onTap: widget.isLoading ? null : widget.onNextDay,
+          ),
+
+          const Spacer(),
+
+          // ── Info button ─────────────────────────────────────────────────
           GestureDetector(
             onTap: () => _showInfoSheet(context),
             child: Container(
@@ -320,23 +369,27 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
                   color: AppColors.textSecondary, size: 13),
             ),
           ),
-          const SizedBox(width: 8),
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: AppColors.accent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              'Peak  ${(peak.pac / 1000).toStringAsFixed(2)} kW',
-              style: const TextStyle(
-                color: AppColors.accent,
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
+
+          // ── Peak badge (hidden while loading) ──────────────────────────
+          if (peak != null) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                'Peak  ${(peak.pac / 1000).toStringAsFixed(2)} kW',
+                style: const TextStyle(
+                  color: AppColors.accent,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -822,6 +875,30 @@ class _ColorDot extends StatelessWidget {
       width: 10,
       height: 10,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+class _NavArrow extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  const _NavArrow({required this.icon, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(3),
+        child: Icon(
+          icon,
+          size: 18,
+          color: onTap != null
+              ? AppColors.textSecondary
+              : AppColors.divider,
+        ),
+      ),
     );
   }
 }

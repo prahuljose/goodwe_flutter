@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../models/session.dart';
 import '../models/station_monitor.dart';
+import '../models/monthly_energy.dart';
 import '../../core/constants.dart';
 import '../../core/exceptions.dart';
 import 'api_logger.dart';
@@ -110,6 +111,219 @@ class SemsApi {
     } catch (e) {
       throw SemsApiError('Unexpected error: $e');
     }
+  }
+
+  // ── GetChartByPlant (monthly — range "3") ───────────────────────────────────
+  //
+  // Confirmed endpoint from SEMS web portal network inspection.
+  // Same endpoint also serves daily (range 2) and yearly (range "4") charts.
+  // The 'date' can be any date within the target month.
+
+  Future<List<DailyEnergy>> getPacByMonth(
+    SemsSession session,
+    String stationId,
+    DateTime month,
+  ) async {
+    final dateStr =
+        '${month.year}-${_pad(month.month)}-${_pad(month.day)}';
+    final url = '${session.apiBase}v2/Charts/GetChartByPlant';
+    final reqBody = {
+      'id':           stationId,
+      'date':         dateStr,
+      'range':        '3',   // "3" = monthly view (string, not int — matches web portal)
+      'chartIndexId': '3',   // PV generation chart
+      'isDetailFull': '',
+    };
+    Response? resp;
+    try {
+      resp = await _dio.post(
+        url,
+        data: reqBody,
+        options: Options(headers: {
+          'Content-Type': 'application/json',
+          'Token': session.tokenHeader,
+        }),
+      );
+      final entries = _parseChartByPlant(resp, month);
+      _logSuccess(
+          'GetChartByPlant(month:${month.year}-${_pad(month.month)})',
+          url, resp, reqBody);
+      return entries;
+    } on SemsError catch (e) {
+      _logFailure('GetChartByPlant(monthly)', url, resp, reqBody, e.message);
+      rethrow;
+    } on DioException catch (e) {
+      _logDio('GetChartByPlant(monthly)', url, e, reqBody);
+      throw _translateDio(e);
+    } catch (e) {
+      throw SemsApiError('Unexpected error: $e');
+    }
+  }
+
+  /// Parse the GetChartByPlant response.
+  ///
+  /// Confirmed shape (from live SEMS network inspection):
+  ///   data.lines[n] → { name, unit, xy: [{x:"YYYY-MM", y:kWh}, …] }
+  ///
+  /// We pick the first line whose unit is "kWh" (PV Generation).
+  /// Earlier guessed shapes are kept as fallbacks.
+  List<DailyEnergy> _parseChartByPlant(Response response, DateTime month) {
+    final body = _requireBody(response);
+    final code = body['code'];
+    if (!_isSuccess(code)) {
+      final msg = body['msg'] as String? ?? 'Failed to fetch chart data';
+      if (_isAuthCode(code, msg)) throw const SemsAuthError();
+      throw SemsApiError(msg, code: code);
+    }
+
+    final data = body['data'];
+    if (data == null) return [];
+
+    // ── Primary shape: {"lines": [{"name":"PVGeneration","xy":[…]}]} ────────
+    if (data is Map && data.containsKey('lines')) {
+      final lines = data['lines'] as List? ?? [];
+      if (lines.isEmpty) return [];
+
+      // Prefer the kWh / PVGeneration line; fall back to first line
+      Map<String, dynamic>? pvLine;
+      for (final line in lines) {
+        final m = line as Map<String, dynamic>;
+        final unit = (m['unit'] as String?)?.toLowerCase() ?? '';
+        final name = (m['name'] as String?)?.toLowerCase() ?? '';
+        if (unit == 'kwh' || name.contains('generation') || name.contains('pv')) {
+          pvLine = m;
+          break;
+        }
+      }
+      pvLine ??= lines.first as Map<String, dynamic>;
+
+      final xy = pvLine['xy'] as List? ?? [];
+      return xy
+          .map((pt) {
+            final p   = pt as Map<String, dynamic>;
+            final kwh = (p['y'] as num?)?.toDouble() ?? 0.0;
+            final dt  = _parseXLabel(p['x']?.toString() ?? '');
+            return dt != null ? DailyEnergy(date: dt, kwh: kwh) : null;
+          })
+          .whereType<DailyEnergy>()
+          .toList();
+    }
+
+    // ── Fallback A: top-level list of {x, y} ─────────────────────────────────
+    if (data is List) {
+      return data
+          .map((e) {
+            final m   = e as Map<String, dynamic>;
+            final kwh = (m['y'] as num?)?.toDouble() ?? 0.0;
+            final dt  = _parseXLabel(m['x']?.toString() ?? '');
+            return dt != null ? DailyEnergy(date: dt, kwh: kwh) : null;
+          })
+          .whereType<DailyEnergy>()
+          .toList();
+    }
+
+    // ── Fallback B: {"pac"/"pacs"/"list": [{date, power}]} ───────────────────
+    if (data is Map) {
+      final list = data['pac']  as List? ??
+                   data['pacs'] as List? ??
+                   data['list'] as List? ?? [];
+      if (list.isNotEmpty) {
+        return list
+            .map((e) => DailyEnergy.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    }
+
+    return [];
+  }
+
+  /// Parse the chart x-axis label into a [DateTime].
+  /// Handles: "YYYY-MM", "YYYY-MM-DD", "MM/DD/YYYY", "1"…"31".
+  DateTime? _parseXLabel(String label) {
+    try {
+      final s = label.trim();
+      final parts = s.split(RegExp(r'[/\-]'));
+
+      // "YYYY-MM" → monthly entry (day=1)
+      if (parts.length == 2 && parts[0].length == 4) {
+        return DateTime(int.parse(parts[0]), int.parse(parts[1]), 1);
+      }
+      // "YYYY-MM-DD" or "YYYY/MM/DD"
+      if (parts.length == 3 && parts[0].length == 4) {
+        return DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+      }
+      // "MM/DD/YYYY"
+      if (parts.length == 3 && parts[2].length == 4) {
+        return DateTime(int.parse(parts[2]), int.parse(parts[0]), int.parse(parts[1]));
+      }
+      // Plain day number "1"…"31" — caller should pass [month] hint (not available here)
+      // We skip these; they're handled only in the monthly-daily parser path.
+    } catch (_) {}
+    return null;
+  }
+
+  // ── GetAlarmList ──────────────────────────────────────────────────────────
+
+  Future<List<AlarmRecord>> getAlarmList(
+    SemsSession session,
+    String stationId, {
+    int pageIndex = 0,
+    int pageSize  = 50,
+  }) async {
+    // NOTE: Endpoint path is a best guess — confirm from SEMS web portal
+    // Alarms tab → DevTools → Network.  Update this URL once confirmed.
+    final url = '${session.apiBase}v2/Alarm/GetAlarmListForApp';
+    final reqBody = {
+      'powerStationId': stationId,
+      'pageIndex': pageIndex,
+      'pageSize': pageSize,
+    };
+    Response? resp;
+    try {
+      resp = await _dio.post(
+        url,
+        data: reqBody,
+        options: Options(headers: {
+          'Content-Type': 'application/json',
+          'Token': session.tokenHeader,
+        }),
+      );
+      final alarms = _parseAlarmList(resp);
+      _logSuccess('GetAlarmList', url, resp, reqBody);
+      return alarms;
+    } on SemsError catch (e) {
+      _logFailure('GetAlarmList', url, resp, reqBody, e.message);
+      rethrow;
+    } on DioException catch (e) {
+      _logDio('GetAlarmList', url, e, reqBody);
+      throw _translateDio(e);
+    } catch (e) {
+      throw SemsApiError('Unexpected error: $e');
+    }
+  }
+
+  List<AlarmRecord> _parseAlarmList(Response response) {
+    final body = _requireBody(response);
+    final code = body['code'];
+    if (!_isSuccess(code)) {
+      final msg = body['msg'] as String? ?? 'Failed to fetch alarm history';
+      if (_isAuthCode(code, msg)) throw const SemsAuthError();
+      throw SemsApiError(msg, code: code);
+    }
+    final data = body['data'];
+    final List list;
+    if (data is Map) {
+      list = data['list'] as List? ??
+          data['alarms'] as List? ??
+          data['records'] as List? ?? [];
+    } else if (data is List) {
+      list = data;
+    } else {
+      return [];
+    }
+    return list
+        .map((e) => AlarmRecord.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   List<PacSample> _parsePacSamples(Response response) {

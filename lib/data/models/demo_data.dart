@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'station_monitor.dart';
+import 'monthly_energy.dart';
 
 /// Realistic mock data for a 10 kW rooftop system in Kerala.
 /// Numbers are plausible for a system ~2 years into operation.
@@ -110,8 +111,9 @@ class DemoData {
 
   /// Realistic bell-curve PAC samples for a 10 kW system on a sunny Kerala day.
   /// 288 entries at 5-minute intervals covering the full 24 h period.
-  static List<PacSample> pacSamples() {
-    final today = DateTime.now();
+  /// Pass [date] to generate reproducible data for a specific historical day.
+  static List<PacSample> pacSamples({DateTime? date}) {
+    final today = date ?? DateTime.now();
     final base = DateTime(today.year, today.month, today.day);
 
     return List.generate(288, (i) {
@@ -129,8 +131,9 @@ class DemoData {
         return PacSample(time: time, pac: 0);
       }
 
-      // Gaussian centred at 12:30, σ = 3 h, peak ≈ 9 500 W
-      const peakW = 9500.0;
+      // Vary peak slightly per date for realistic-looking historical data
+      final dateSeed = (today.day * 17 + today.month * 7) % 21;
+      final peakW = 9500.0 * (0.80 + dateSeed / 100.0); // 80–100 % of max
       const mu = 12.5;
       const sigma = 3.0;
       final z = (hour - mu) / sigma;
@@ -147,6 +150,71 @@ class DemoData {
 
       return PacSample(time: time, pac: (raw * jitter).clamp(0.0, peakW));
     });
+  }
+
+  /// Monthly generation totals for [year], Jan → current month (for the
+  /// current year) or Jan → Dec (for past years).
+  /// Mirrors GetChartByPlant shape: each entry has date.day == 1.
+  static List<DailyEnergy> monthlyEnergy(int year) {
+    final today      = DateTime.now();
+    final isThisYear = year == today.year;
+    final lastMonth  = isThisYear ? today.month : 12;
+    final result     = <DailyEnergy>[];
+
+    for (int m = 1; m <= lastMonth; m++) {
+      final date = DateTime(year, m, 1);
+
+      // Seed-based monthly production (Kerala: dip Jun–Sep monsoon)
+      final monsoon = m >= 6 && m <= 9;
+      final s       = (m * 17 + year * 3) % 20; // 0–19, reproducible
+      final base    = monsoon ? 350.0 + s * 8 : 520.0 + s * 14;
+
+      // Current month: partial
+      final isCurrent = isThisYear && m == today.month;
+      final kwh = isCurrent ? base * (today.day / 30.0) : base;
+
+      result.add(DailyEnergy(date: date, kwh: double.parse(kwh.toStringAsFixed(1))));
+    }
+    return result;
+  }
+
+  /// A handful of realistic past alarm records for the demo station.
+  static List<AlarmRecord> alarmHistory() {
+    final now = DateTime.now();
+    return [
+      AlarmRecord(
+        sn:         'DM2024GW10K001',
+        alarmType:  1,
+        alarmCode:  19,
+        message:    'Over-temperature — check ventilation around inverter',
+        happenTime:  now.subtract(const Duration(days: 3, hours: 2, minutes: 10)),
+        recoverTime: now.subtract(const Duration(days: 3, hours: 0, minutes: 45)),
+      ),
+      AlarmRecord(
+        sn:         'DM2024GW10K001',
+        alarmType:  2,
+        alarmCode:  3,
+        message:    'Grid frequency out of range',
+        happenTime:  now.subtract(const Duration(days: 8, hours: 5)),
+        recoverTime: now.subtract(const Duration(days: 8, hours: 4, minutes: 38)),
+      ),
+      AlarmRecord(
+        sn:         'DM2024GW10K001',
+        alarmType:  1,
+        alarmCode:  23,
+        message:    'Grid disconnection / utility loss',
+        happenTime:  now.subtract(const Duration(days: 14, hours: 7)),
+        recoverTime: now.subtract(const Duration(days: 14, hours: 5, minutes: 50)),
+      ),
+      AlarmRecord(
+        sn:         'DM2024GW10K001',
+        alarmType:  2,
+        alarmCode:  15,
+        message:    'Grid voltage out of range',
+        happenTime:  now.subtract(const Duration(days: 21, hours: 3, minutes: 30)),
+        recoverTime: now.subtract(const Duration(days: 21, hours: 3, minutes: 12)),
+      ),
+    ];
   }
 
   static String _fmt(DateTime d) =>

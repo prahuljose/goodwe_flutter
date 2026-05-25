@@ -193,7 +193,14 @@ List<Widget> _errorCodeRows() {
 class InverterCard extends StatelessWidget {
   final InverterData inverter;
 
-  const InverterCard({super.key, required this.inverter});
+  /// Called when user taps "Alarm History". Dashboard handles the navigation.
+  final VoidCallback? onAlarmHistoryTap;
+
+  const InverterCard({
+    super.key,
+    required this.inverter,
+    this.onAlarmHistoryTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -288,6 +295,35 @@ class InverterCard extends StatelessWidget {
               Expanded(child: _AcPhase(phase: 'L3', v: inverter.vac3, a: inverter.iac3)),
             ],
           ),
+
+          // ── Alarm history button ───────────────────────────────────────
+          if (onAlarmHistoryTap != null) ...[
+            const SizedBox(height: 16),
+            const Divider(color: AppColors.divider, height: 1),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: onAlarmHistoryTap,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.history_rounded,
+                      color: AppColors.textSecondary, size: 14),
+                  SizedBox(width: 6),
+                  Text(
+                    'View Alarm History',
+                    style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  SizedBox(width: 4),
+                  Icon(Icons.chevron_right_rounded,
+                      color: AppColors.textSecondary, size: 14),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

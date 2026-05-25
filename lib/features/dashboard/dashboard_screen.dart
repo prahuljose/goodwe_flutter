@@ -14,8 +14,11 @@ import 'widgets/inverter_card.dart';
 import 'widgets/insights_card.dart';
 import 'widgets/api_log_sheet.dart';
 import 'widgets/power_chart.dart';
+import 'widgets/monthly_bar_chart.dart';
 import '../../data/remote/api_logger.dart';
 import '../../data/models/demo_data.dart';
+import '../../data/models/monthly_energy.dart';
+import '../alarm/alarm_history_screen.dart';
 
 const _stationId = 'e3c2c54c-c872-4fdb-8147-99381e685cff';
 
@@ -29,8 +32,18 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
   StationMonitor? _monitor;
+
+  // ── Intra-day power curve state ──────────────────────────────────────────
   List<PacSample> _pacSamples = [];
-  String _pacDateLabel = 'Today';
+  String          _pacDateLabel  = 'Today';
+  DateTime        _selectedPacDate = DateTime.now();
+  bool            _isPacLoading  = false;
+
+  // ── Annual energy bar chart state ────────────────────────────────────────
+  List<DailyEnergy> _monthlyEnergy    = [];
+  int               _selectedYear     = DateTime.now().year;
+  bool              _isMonthlyLoading = false;
+
   bool _isLoading = true;
   SemsError? _error;
   double? _earningsRate;
@@ -40,6 +53,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   void initState() {
     super.initState();
+    _selectedPacDate = DateTime.now();
+    _selectedYear    = DateTime.now().year;
     _staggerCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -70,10 +85,14 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (auth.isDemoMode) {
         await Future.delayed(const Duration(milliseconds: 800));
         if (mounted) {
+          final now = DateTime.now();
           setState(() {
-            _monitor = DemoData.stationMonitor();
-            _pacSamples = DemoData.pacSamples();
-            _pacDateLabel = 'Today';
+            _monitor         = DemoData.stationMonitor();
+            _pacSamples      = DemoData.pacSamples();
+            _pacDateLabel    = 'Today';
+            _selectedPacDate = now;
+            _monthlyEnergy   = DemoData.monthlyEnergy(now.year);
+            _selectedYear    = now.year;
           });
           _staggerCtrl.forward();
         }
@@ -119,20 +138,34 @@ class _DashboardScreenState extends State<DashboardScreen>
             auth.currentSession!, _stationId);
       }
 
-      // Fetch intra-day PAC chart (non-critical — chart simply won't show on error)
+      final now = DateTime.now();
+
+      // Fetch intra-day PAC chart (non-critical)
       List<PacSample> pacSamples = [];
       try {
         pacSamples = await stationRepo.fetchPacByDay(
-            auth.currentSession!, _stationId, DateTime.now());
+            auth.currentSession!, _stationId, now);
       } catch (_) {
         // Silently swallow — the power curve card is supplemental
       }
 
+      // Fetch annual energy bar chart — pass today so the trailing-12 response
+      // covers the full current year (Jan → now); filter to current year only.
+      List<DailyEnergy> monthlyEnergy = [];
+      try {
+        final raw = await stationRepo.fetchPacByMonth(
+            auth.currentSession!, _stationId, now);
+        monthlyEnergy = _filterToYear(raw, now.year);
+      } catch (_) {}
+
       if (mounted) {
         setState(() {
-          _monitor = monitor;
-          _pacSamples = pacSamples;
-          _pacDateLabel = 'Today';
+          _monitor         = monitor;
+          _pacSamples      = pacSamples;
+          _pacDateLabel    = 'Today';
+          _selectedPacDate = now;
+          _monthlyEnergy   = _filterToYear(monthlyEnergy, now.year);
+          _selectedYear    = now.year;
         });
         _staggerCtrl.forward();
       }
@@ -159,6 +192,169 @@ class _DashboardScreenState extends State<DashboardScreen>
     final storage = context.read<SettingsStorage>();
     final rate = await storage.loadEarningsRate();
     if (mounted) setState(() => _earningsRate = rate);
+  }
+
+  // ── Session helper ────────────────────────────────────────────────────────
+
+  /// Ensures a live session exists, attempting a silent re-login if the
+  /// session is missing.  Returns false (and leaves loading state to the
+  /// caller to clean up) if recovery fails.
+  Future<bool> _ensureSession(AuthRepository auth) async {
+    if (auth.currentSession != null) return true;
+    final ok = await auth.tryRelogin();
+    if (!mounted) return false;
+    if (!ok) {
+      // Credentials gone or network down — give up silently
+      return false;
+    }
+    return true;
+  }
+
+  // ── Intra-day PAC navigation ──────────────────────────────────────────────
+
+  String _formatPacDate(DateTime date) {
+    final now = DateTime.now();
+    if (date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day) { return 'Today'; }
+    final yesterday = now.subtract(const Duration(days: 1));
+    if (date.year == yesterday.year &&
+        date.month == yesterday.month &&
+        date.day == yesterday.day) { return 'Yesterday'; }
+    const m = ['Jan','Feb','Mar','Apr','May','Jun',
+                'Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${date.day} ${m[date.month - 1]}';
+  }
+
+  bool get _isPacToday {
+    final now = DateTime.now();
+    return _selectedPacDate.year == now.year &&
+        _selectedPacDate.month == now.month &&
+        _selectedPacDate.day == now.day;
+  }
+
+  Future<void> _fetchPacForDate(DateTime date) async {
+    setState(() => _isPacLoading = true);
+    final auth = context.read<AuthRepository>();
+
+    if (auth.isDemoMode) {
+      await Future.delayed(const Duration(milliseconds: 350));
+      if (!mounted) return;
+      setState(() {
+        _pacSamples      = DemoData.pacSamples(date: date);
+        _selectedPacDate = date;
+        _pacDateLabel    = _formatPacDate(date);
+        _isPacLoading    = false;
+      });
+      return;
+    }
+
+    if (!await _ensureSession(auth)) {
+      if (mounted) setState(() => _isPacLoading = false);
+      return;
+    }
+
+    try {
+      final stationRepo = context.read<StationRepository>();
+      final samples = await stationRepo.fetchPacByDay(
+          auth.currentSession!, _stationId, date);
+      if (mounted) {
+        setState(() {
+          _pacSamples      = samples;
+          _selectedPacDate = date;
+          _pacDateLabel    = _formatPacDate(date);
+          _isPacLoading    = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isPacLoading = false);
+    }
+  }
+
+  void _onPrevDay() {
+    final prev = _selectedPacDate.subtract(const Duration(days: 1));
+    _fetchPacForDate(prev);
+  }
+
+  void _onNextDay() {
+    final next = _selectedPacDate.add(const Duration(days: 1));
+    _fetchPacForDate(next);
+  }
+
+  // ── Annual energy navigation ──────────────────────────────────────────────
+
+  bool get _isCurrentYear => _selectedYear == DateTime.now().year;
+
+  /// Filter a list of monthly entries to only those belonging to [year].
+  static List<DailyEnergy> _filterToYear(List<DailyEnergy> all, int year) =>
+      all.where((e) => e.date.year == year).toList()
+        ..sort((a, b) => a.date.compareTo(b.date));
+
+  Future<void> _fetchMonthlyForYear(int year) async {
+    setState(() {
+      _isMonthlyLoading = true;
+      _monthlyEnergy    = [];
+    });
+    final auth = context.read<AuthRepository>();
+
+    if (auth.isDemoMode) {
+      await Future.delayed(const Duration(milliseconds: 350));
+      if (!mounted) return;
+      setState(() {
+        _monthlyEnergy    = DemoData.monthlyEnergy(year);
+        _selectedYear     = year;
+        _isMonthlyLoading = false;
+      });
+      return;
+    }
+
+    if (!await _ensureSession(auth)) {
+      if (mounted) {
+        setState(() {
+          _selectedYear     = year;
+          _isMonthlyLoading = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final now         = DateTime.now();
+      final isThisYear  = year == now.year;
+      // For current year pass today so the trailing-12 response covers Jan→now.
+      // For past years pass Dec 1 of that year so it covers the full Jan–Dec range.
+      final refDate     = isThisYear ? now : DateTime(year, 12, 1);
+      final stationRepo = context.read<StationRepository>();
+      final raw         = await stationRepo.fetchPacByMonth(
+          auth.currentSession!, _stationId, refDate);
+      if (mounted) {
+        setState(() {
+          _monthlyEnergy    = _filterToYear(raw, year);
+          _selectedYear     = year;
+          _isMonthlyLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _selectedYear     = year;
+          _isMonthlyLoading = false;
+        });
+      }
+    }
+  }
+
+  void _onPrevYear() => _fetchMonthlyForYear(_selectedYear - 1);
+  void _onNextYear() => _fetchMonthlyForYear(_selectedYear + 1);
+
+  // ── Alarm history ─────────────────────────────────────────────────────────
+
+  void _openAlarmHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AlarmHistoryScreen(stationId: _stationId),
+      ),
+    );
   }
 
   Future<void> _showEarningsDialog() async {
@@ -418,16 +614,35 @@ class _DashboardScreenState extends State<DashboardScreen>
                 const SizedBox(height: 16),
 
                 // Intra-day power curve
-                if (_pacSamples.isNotEmpty)
+                if (_pacSamples.isNotEmpty || _isPacLoading)
                   _Staggered(
                     ctrl: _staggerCtrl,
                     index: 2,
                     child: PowerCurveCard(
                       samples: _pacSamples,
                       dateLabel: _pacDateLabel,
+                      isLoading: _isPacLoading,
+                      onPrevDay: _onPrevDay,
+                      onNextDay: _isPacToday ? null : _onNextDay,
                     ),
                   ),
-                if (_pacSamples.isNotEmpty) const SizedBox(height: 16),
+                if (_pacSamples.isNotEmpty || _isPacLoading)
+                  const SizedBox(height: 16),
+
+                // Annual energy bar chart
+                if (!_isLoading)
+                  _Staggered(
+                    ctrl: _staggerCtrl,
+                    index: 2,
+                    child: MonthlyEnergyBarChartCard(
+                      entries:     _monthlyEnergy,
+                      year:        _selectedYear,
+                      isLoading:   _isMonthlyLoading,
+                      onPrevYear:  _onPrevYear,
+                      onNextYear:  _isCurrentYear ? null : _onNextYear,
+                    ),
+                  ),
+                if (!_isLoading) const SizedBox(height: 16),
 
                 // Income KPIs
                 _Staggered(
@@ -564,7 +779,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                   _Staggered(
                     ctrl: _staggerCtrl,
                     index: 9,
-                    child: InverterCard(inverter: inverter),
+                    child: InverterCard(
+                      inverter: inverter,
+                      onAlarmHistoryTap: _openAlarmHistory,
+                    ),
                   ),
                 const SizedBox(height: 16),
 
