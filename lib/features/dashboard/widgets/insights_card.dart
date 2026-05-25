@@ -82,6 +82,137 @@ const _indiaFlightRoutes = [
   _FlightRoute('Kochi', 'Kolkata', 0.240),
 ];
 
+// ─── Impact fact pool ─────────────────────────────────────────────────────
+
+typedef _FactBuilder = _InsightItem Function(
+    double co2Tonnes, double totalKwh, double totalIncome);
+
+/// 16 diverse facts — 4 are randomly chosen each shuffle.
+/// Covers CO₂ offset, energy equivalents, and income equivalents.
+final List<_FactBuilder> _impactFactPool = [
+  // ── CO₂ based ────────────────────────────────────────────────────────────
+  (co2, kwh, inc) {
+    final route =
+        _indiaFlightRoutes[Random().nextInt(_indiaFlightRoutes.length)];
+    return _InsightItem(
+      emoji: '✈️',
+      value: (co2 / route.co2Tonnes).roundToDouble(),
+      label: '${route.label} flights worth of CO₂ saved',
+      color: const Color(0xFF60A5FA),
+    );
+  },
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🚗',
+    value: (co2 * 1000 / 0.12 / 1000).roundToDouble(),
+    label: 'thousand km of car driving avoided',
+    color: const Color(0xFFFBBF24),
+    decimals: 1,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🌳',
+    // 1 mature tree absorbs ≈ 21 kg CO₂ per year
+    value: (co2 * 1000 / 21).roundToDouble(),
+    label: 'years of CO₂ absorbed by a single tree',
+    color: AppColors.green,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '⛏️',
+    // 1 tonne CO₂ ≈ from burning 0.4 tonnes of coal
+    value: (co2 / 0.4 * 1000).roundToDouble(),
+    label: 'kg of coal that stayed in the ground',
+    color: const Color(0xFF9CA3AF),
+  ),
+  // ── Energy based ─────────────────────────────────────────────────────────
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🏠',
+    value: (kwh / 4.5).roundToDouble(),
+    label: 'days of average Indian home electricity',
+    color: AppColors.green,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '⚡',
+    // Average Indian EV: ~6 km/kWh
+    value: (kwh * 6 / 1000).roundToDouble(),
+    label: 'thousand km driven in an electric vehicle',
+    color: const Color(0xFF818CF8),
+    decimals: 1,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '📱',
+    // 15 Wh per full smartphone charge
+    value: (kwh * 1000 / 15 / 1000).roundToDouble(),
+    label: 'thousand smartphone charges',
+    color: const Color(0xFF34D399),
+    decimals: 1,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '❄️',
+    // 1.5-tonne split AC ≈ 1.5 kW
+    value: (kwh / 1.5).roundToDouble(),
+    label: 'hours of 1.5-tonne AC running',
+    color: const Color(0xFFA78BFA),
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🍚',
+    // Rice cooker ≈ 0.4 kWh per cook
+    value: (kwh / 0.4).roundToDouble(),
+    label: 'pots of rice cooked',
+    color: const Color(0xFFFCA5A5),
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '💡',
+    // 10 W LED bulb: kwh / 0.01 kW → hours → ÷ 8760 → years
+    value: (kwh * 1000 / 10 / 8760).roundToDouble(),
+    label: 'years of continuous LED lighting',
+    color: const Color(0xFFFDE68A),
+    decimals: 1,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🚿',
+    // 2 kW electric geyser running 20 min ≈ 0.667 kWh per shower
+    value: (kwh / 0.667).roundToDouble(),
+    label: 'hot showers powered',
+    color: const Color(0xFF67E8F9),
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🏏',
+    // Floodlit cricket ground ≈ 400 kW · 4 h match = 1 600 kWh per game
+    value: (kwh / 1600).roundToDouble(),
+    label: 'evening cricket matches worth of floodlight',
+    color: const Color(0xFF86EFAC),
+    decimals: 1,
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🚂',
+    // Indian Railways ≈ 0.04 kWh / passenger-km; Mumbai–Delhi ≈ 1 384 km
+    value: (kwh / 55).roundToDouble(),
+    label: 'Mumbai–Delhi train journeys per passenger',
+    color: const Color(0xFFFDA4AF),
+  ),
+  // ── Income based ─────────────────────────────────────────────────────────
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🛒',
+    // Average Indian monthly grocery spend ≈ ₹5 000
+    value: (inc / 5000).roundToDouble(),
+    label: 'months of grocery shopping',
+    color: const Color(0xFF34D399),
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '☕',
+    // Roadside chai ≈ ₹20 per cup
+    value: (inc / 20).roundToDouble(),
+    label: 'cups of chai',
+    color: const Color(0xFFD97706),
+  ),
+  (co2, kwh, inc) => _InsightItem(
+    emoji: '🎬',
+    // Two multiplex tickets ≈ ₹600
+    value: (inc / 600).roundToDouble(),
+    label: 'movie nights for two',
+    color: const Color(0xFFA78BFA),
+  ),
+];
+
 // ─── CO2 comparisons for lifetime savings ────────────────────────────────
 
 class Co2InsightsCard extends StatefulWidget {
@@ -101,64 +232,36 @@ class Co2InsightsCard extends StatefulWidget {
 }
 
 class _Co2InsightsCardState extends State<Co2InsightsCard> {
-  late _FlightRoute _route;
+  List<_InsightItem> _items = const [];
 
   @override
   void initState() {
     super.initState();
-    _pickRoute();
+    _pickItems();
   }
 
   @override
   void didUpdateWidget(Co2InsightsCard old) {
     super.didUpdateWidget(old);
-    // Re-randomise when fresh data arrives
-    if (old.co2Tonnes != widget.co2Tonnes) _pickRoute();
+    if (old.co2Tonnes != widget.co2Tonnes) setState(_pickItems);
   }
 
-  void _pickRoute() {
-    _route = _indiaFlightRoutes[Random().nextInt(_indiaFlightRoutes.length)];
+  void _pickItems() {
+    final pool = List<_FactBuilder>.from(_impactFactPool)..shuffle(Random());
+    _items = pool
+        .take(4)
+        .map((f) => f(widget.co2Tonnes, widget.totalKwh, widget.totalIncome))
+        .toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    final flights = (widget.co2Tonnes / _route.co2Tonnes).round();
-    final carKm = (widget.co2Tonnes * 1000 / 0.12).round();
-    final homeDays = (widget.totalKwh / 4.5).round();
-    final billMonths = (widget.totalIncome / 1500).round();
-
     return _InsightSection(
       title: 'Your lifetime impact',
       icon: Icons.eco_rounded,
       iconColor: AppColors.green,
-      headerAction: _RefreshRouteButton(onTap: () => setState(_pickRoute)),
-      items: [
-        _InsightItem(
-          emoji: '✈️',
-          value: flights.toDouble(),
-          label: '${_route.label} flights worth of CO₂ saved',
-          color: const Color(0xFF60A5FA),
-        ),
-        _InsightItem(
-          emoji: '🚗',
-          value: (carKm / 1000).roundToDouble(),
-          label: 'thousand km of car driving avoided',
-          color: const Color(0xFFFBBF24),
-          decimals: 1,
-        ),
-        _InsightItem(
-          emoji: '🏠',
-          value: homeDays.toDouble(),
-          label: 'days of average home electricity',
-          color: AppColors.green,
-        ),
-        _InsightItem(
-          emoji: '💡',
-          value: billMonths.toDouble(),
-          label: 'months of electricity bills covered',
-          color: AppColors.accent,
-        ),
-      ],
+      headerAction: _RefreshRouteButton(onTap: () => setState(_pickItems)),
+      items: _items,
     );
   }
 }

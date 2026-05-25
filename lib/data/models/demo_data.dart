@@ -41,6 +41,8 @@ class DemoData {
           hTotal: 16820.0,   // ~2 years of operating hours
           lastRefreshTime: ts,
           workMode: 'Selling Power',
+          errorCode: 0,
+          warningCode: 0,
           vpv1: 382.4,
           vpv2: 378.8,
           ipv1: 4.92,
@@ -121,6 +123,12 @@ class DemoData {
         return PacSample(time: time, pac: 0);
       }
 
+      // ── Simulated power cut: 08:00 – 08:20 (indices 96 – 100) ────────────
+      // index = minutes-from-midnight / 5  →  8:00 = 96, 8:20 = 100
+      if (i >= 96 && i <= 100) {
+        return PacSample(time: time, pac: 0);
+      }
+
       // Gaussian centred at 12:30, σ = 3 h, peak ≈ 9 500 W
       const peakW = 9500.0;
       const mu = 12.5;
@@ -128,7 +136,13 @@ class DemoData {
       final z = (hour - mu) / sigma;
       final raw = peakW * math.exp(-0.5 * z * z);
 
-      // Light cloud flutter — ±8 % jitter using a deterministic pseudo-random
+      // ── Simulated cloud shadow: 13:00 – 13:30 (indices 156 – 162) ─────────
+      // Drop output to ~18 % of the gaussian baseline for those 30 min
+      if (i >= 156 && i <= 162) {
+        return PacSample(time: time, pac: (raw * 0.18).clamp(0.0, peakW));
+      }
+
+      // Light cloud flutter — ±8 % jitter
       final jitter = 1.0 + 0.08 * math.sin(i * 7.3 + 1.1) * math.cos(i * 3.1);
 
       return PacSample(time: time, pac: (raw * jitter).clamp(0.0, peakW));

@@ -3,6 +3,26 @@ import 'package:flutter/material.dart';
 import '../../../core/theme.dart';
 import '../../../data/models/station_monitor.dart';
 
+// ─── Anomaly model ─────────────────────────────────────────────────────────
+
+enum _AnomalyKind { outage, cloudShadow }
+
+class _AnomalyEvent {
+  final _AnomalyKind kind;
+  final DateTime start;
+  final DateTime end;
+  final int dropPct; // only meaningful for cloudShadow
+
+  const _AnomalyEvent({
+    required this.kind,
+    required this.start,
+    required this.end,
+    this.dropPct = 0,
+  });
+
+  int get durationMinutes => end.difference(start).inMinutes;
+}
+
 // ─── Public widget ─────────────────────────────────────────────────────────────
 
 class PowerCurveCard extends StatefulWidget {
@@ -40,6 +60,83 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
       ? null
       : widget.samples.reduce((a, b) => a.pac > b.pac ? a : b);
 
+  List<_AnomalyEvent> get _anomalies {
+    final s = widget.samples;
+    if (s.isEmpty) return const [];
+
+    final first = s.indexWhere((x) => x.pac > 0);
+    final last  = s.lastIndexWhere((x) => x.pac > 0);
+    if (first == -1 || last <= first) return const [];
+
+    final window = s.sublist(first, last + 1);
+    final events  = <_AnomalyEvent>[];
+    const nearZero = 50.0; // < 50 W treated as off
+
+    // ── Outages: zero-pac runs inside the generation window ──────────────────
+    int? gapStart;
+    for (int i = 0; i < window.length; i++) {
+      if (window[i].pac < nearZero && gapStart == null) {
+        gapStart = i;
+      } else if (window[i].pac >= nearZero && gapStart != null) {
+        // Use window[i].time (resumption) as end so the range is always
+        // non-zero even for a single-sample gap (5-min resolution).
+        final start = window[gapStart].time;
+        final end   = window[i].time;
+        final dur   = end.difference(start).inMinutes;
+        if (dur >= 5) {
+          events.add(_AnomalyEvent(
+            kind: _AnomalyKind.outage,
+            start: start,
+            end: end,
+          ));
+        }
+        gapStart = null;
+      }
+    }
+
+    // ── Cloud shadows: pac < 30 % of recent 2-h max, lasts ≥ 15 min ─────────
+    final dayPeak =
+        window.map((x) => x.pac).reduce(math.max);
+    const rollSamples = 24; // 2-hour look-back at 5-min intervals
+    int? shadowStart;
+    for (int i = rollSamples; i < window.length; i++) {
+      double recentMax = 0;
+      for (int j = i - rollSamples; j < i; j++) {
+        if (window[j].pac > recentMax) recentMax = window[j].pac;
+      }
+      // Only flag when context is meaningful (recent high ≥ 15 % of day peak)
+      if (recentMax < dayPeak * 0.15) continue;
+
+      final isLow = window[i].pac > nearZero &&
+          window[i].pac < recentMax * 0.30;
+
+      if (isLow && shadowStart == null) {
+        shadowStart = i;
+      } else if (!isLow && shadowStart != null) {
+        final dur =
+            window[i].time.difference(window[shadowStart].time).inMinutes;
+        if (dur >= 15) {
+          final minPac = window
+              .sublist(shadowStart, i)
+              .map((x) => x.pac)
+              .reduce(math.min);
+          final drop =
+              ((1 - minPac / recentMax) * 100).round().clamp(0, 99);
+          events.add(_AnomalyEvent(
+            kind: _AnomalyKind.cloudShadow,
+            start: window[shadowStart].time,
+            end: window[i - 1].time,
+            dropPct: drop,
+          ));
+        }
+        shadowStart = null;
+      }
+    }
+
+    events.sort((a, b) => a.start.compareTo(b.start));
+    return events;
+  }
+
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
@@ -75,12 +172,14 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
                     samples: visible,
                     hoverIdx: _hoverIdx,
                     peak: peak,
+                    anomalies: _anomalies,
                   ),
                 ),
               ),
             );
           }),
           _buildFooter(visible),
+          _buildAnomalyInsights(_anomalies),
           const SizedBox(height: 14),
         ],
       ),
@@ -97,6 +196,97 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
         .round()
         .clamp(0, samples.length - 1);
     setState(() => _hoverIdx = idx);
+  }
+
+  void _showInfoSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      isScrollControlled: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Row(
+              children: [
+                Icon(Icons.info_outline_rounded,
+                    color: AppColors.accent, size: 20),
+                SizedBox(width: 10),
+                Text(
+                  'How anomalies are detected',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            _AnomalyInfoBlock(
+              color: const Color(0xFFF87171),
+              icon: Icons.bolt_rounded,
+              title: 'Power Outage  (red band)',
+              body: 'Flagged when output drops to near-zero (< 50 W) for '
+                  '5 or more consecutive minutes inside the normal generation '
+                  'window. Common causes: grid disconnection, a tripped '
+                  'breaker, or the inverter entering protection mode.',
+            ),
+            const SizedBox(height: 12),
+            _AnomalyInfoBlock(
+              color: const Color(0xFF93C5FD),
+              icon: Icons.cloud_outlined,
+              title: 'Cloud Shadow  (blue band)',
+              body: 'Flagged when output falls below 30 % of the highest '
+                  'output seen in the preceding 2 hours, and stays low for '
+                  '15 or more minutes. The rolling look-back means natural '
+                  'morning ramp-up is never falsely flagged — it only fires '
+                  'when there is a meaningful mid-generation drop.',
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.cardAlt,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: const Row(
+                children: [
+                  _ColorDot(color: Color(0xFFF87171)),
+                  SizedBox(width: 8),
+                  Text('Power outage',
+                      style: TextStyle(
+                          color: AppColors.textPrimary, fontSize: 12)),
+                  SizedBox(width: 20),
+                  _ColorDot(color: Color(0xFF93C5FD)),
+                  SizedBox(width: 8),
+                  Text('Cloud shadow',
+                      style: TextStyle(
+                          color: AppColors.textPrimary, fontSize: 12)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildHeader(PacSample peak) {
@@ -117,6 +307,20 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
               ),
             ),
           ),
+          GestureDetector(
+            onTap: () => _showInfoSheet(context),
+            child: Container(
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                color: AppColors.cardAlt,
+                borderRadius: BorderRadius.circular(7),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: const Icon(Icons.info_outline_rounded,
+                  color: AppColors.textSecondary, size: 13),
+            ),
+          ),
+          const SizedBox(width: 8),
           Container(
             padding:
                 const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -166,6 +370,68 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
       ),
     );
   }
+
+  Widget _buildAnomalyInsights(List<_AnomalyEvent> anomalies) {
+    if (anomalies.isEmpty) return const SizedBox.shrink();
+
+    String t(DateTime dt) =>
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Divider(color: Color(0xFF1E2D3F), height: 1),
+          const SizedBox(height: 10),
+          ...anomalies.map((a) {
+            final isOutage = a.kind == _AnomalyKind.outage;
+            final color = isOutage
+                ? const Color(0xFFF87171)  // red
+                : const Color(0xFF93C5FD); // blue
+            final icon  = isOutage
+                ? Icons.bolt_rounded
+                : Icons.cloud_outlined;
+            final dur = a.durationMinutes;
+            final durStr = dur >= 60
+                ? '${(dur / 60).toStringAsFixed(1)} hr'
+                : '$dur min';
+            final label = isOutage
+                ? 'Power outage  ·  ${t(a.start)} – ${t(a.end)}  ($durStr)'
+                : 'Cloud shadow  ·  ${t(a.start)} – ${t(a.end)}'
+                  '  (output dropped ~${a.dropPct}%)';
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(icon, color: color, size: 12),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
 }
 
 // ─── CustomPainter ─────────────────────────────────────────────────────────────
@@ -174,6 +440,7 @@ class _ChartPainter extends CustomPainter {
   final List<PacSample> samples;
   final int? hoverIdx;
   final PacSample peak;
+  final List<_AnomalyEvent> anomalies;
 
   // Exposed as constants so the parent widget can use them for hit-testing
   static const lp = 52.0; // left pad  (y-axis labels)
@@ -185,6 +452,7 @@ class _ChartPainter extends CustomPainter {
     required this.samples,
     required this.hoverIdx,
     required this.peak,
+    required this.anomalies,
   });
 
   @override
@@ -195,20 +463,56 @@ class _ChartPainter extends CustomPainter {
     final maxPac = samples.map((s) => s.pac).reduce(math.max);
     if (maxPac == 0) return;
 
+    // Add 12 % headroom so the peak curve never touches the top of the chart
+    final scaledMax = maxPac * 1.12;
+
     // Map sample index → canvas Offset
     Offset pt(int i) => Offset(
           chart.left + (i / (samples.length - 1)) * chart.width,
-          chart.bottom - (samples[i].pac / maxPac) * chart.height,
+          chart.bottom - (samples[i].pac / scaledMax) * chart.height,
         );
 
     final pts = List.generate(samples.length, pt);
 
-    _drawGridAndLabels(canvas, chart, maxPac);
+    _drawGridAndLabels(canvas, chart, scaledMax);
     _drawXLabels(canvas, chart);
+    _drawAnomalyBands(canvas, chart);
     _drawArea(canvas, chart, pts);
     _drawLine(canvas, pts);
     _drawPeakMarker(canvas, chart, pts);
     if (hoverIdx != null) _drawHover(canvas, chart, pts);
+  }
+
+  // ── Outage / cloud-shadow shading behind the curve ────────────────────────
+
+  void _drawAnomalyBands(Canvas canvas, Rect chart) {
+    if (anomalies.isEmpty) return;
+
+    final tStart   = samples.first.time;
+    final tEnd     = samples.last.time;
+    final totalMins =
+        tEnd.difference(tStart).inMinutes.toDouble();
+    if (totalMins == 0) return;
+
+    for (final a in anomalies) {
+      final x1 = chart.left +
+          a.start.difference(tStart).inMinutes / totalMins * chart.width;
+      final x2 = chart.left +
+          a.end.difference(tStart).inMinutes / totalMins * chart.width;
+
+      final color = a.kind == _AnomalyKind.outage
+          ? const Color(0xFFF87171)
+          : const Color(0xFF93C5FD);
+
+      canvas.drawRect(
+        Rect.fromLTRB(
+            x1.clamp(chart.left, chart.right),
+            chart.top,
+            (x2 + 1).clamp(chart.left, chart.right),
+            chart.bottom),
+        Paint()..color = color.withValues(alpha: 0.10),
+      );
+    }
   }
 
   // ── Grid lines + Y-axis labels ─────────────────────────────────────────────
@@ -226,7 +530,7 @@ class _ChartPainter extends CustomPainter {
       final label = kw >= 1.0
           ? '${kw.toStringAsFixed(1)}kW'
           : '${(kw * 1000).toStringAsFixed(0)}W';
-      _label(canvas, label, Offset(0, y - 6), maxWidth: lp - 4,
+      _label(canvas, label, Offset(6, y - 6), maxWidth: lp - 14,
           align: TextAlign.right);
     }
   }
@@ -382,16 +686,20 @@ class _ChartPainter extends CustomPainter {
           TextSpan(
             text: '$timeStr  ',
             style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 10,
-                fontWeight: FontWeight.w500),
+              color: AppColors.textSecondary,
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+              fontFamily: 'Outfit',
+            ),
           ),
           TextSpan(
             text: valStr,
             style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.w700),
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              fontFamily: 'Outfit',
+            ),
           ),
         ],
       ),
@@ -429,7 +737,11 @@ class _ChartPainter extends CustomPainter {
     (TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(color: Color(0xFF4B5E7A), fontSize: 9),
+        style: const TextStyle(
+          color: Color(0xFF4B5E7A),
+          fontSize: 9,
+          fontFamily: 'Outfit',
+        ),
       ),
       textDirection: TextDirection.ltr,
       textAlign: align,
@@ -441,5 +753,75 @@ class _ChartPainter extends CustomPainter {
   bool shouldRepaint(_ChartPainter old) =>
       old.samples != samples ||
       old.hoverIdx != hoverIdx ||
-      old.peak != peak;
+      old.peak != peak ||
+      old.anomalies != anomalies;
+}
+
+// ─── Info sheet helpers ────────────────────────────────────────────────────
+
+class _AnomalyInfoBlock extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final String title;
+  final String body;
+
+  const _AnomalyInfoBlock({
+    required this.color,
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.30)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    )),
+                const SizedBox(height: 5),
+                Text(body,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      height: 1.5,
+                    )),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColorDot extends StatelessWidget {
+  final Color color;
+  const _ColorDot({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
 }

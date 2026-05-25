@@ -134,6 +134,8 @@ class InverterData {
   final double hTotal;
   final String lastRefreshTime;
   final String workMode;
+  final int errorCode;
+  final int warningCode;
   final double vpv1;
   final double vpv2;
   final double ipv1;
@@ -158,6 +160,8 @@ class InverterData {
     required this.hTotal,
     required this.lastRefreshTime,
     required this.workMode,
+    required this.errorCode,
+    required this.warningCode,
     required this.vpv1,
     required this.vpv2,
     required this.ipv1,
@@ -171,6 +175,54 @@ class InverterData {
     required this.fac1,
   });
 
+  /// True only when the inverter has reported an actual error code.
+  /// status == -1 alone means offline/standby — not a fault alert.
+  bool get hasFault   => errorCode != 0;
+  bool get hasWarning => warningCode != 0 && errorCode == 0;
+
+  String get statusLabel {
+    if (errorCode != 0)   return 'Fault';
+    if (warningCode != 0) return 'Warning';
+    if (status == -1)     return 'Offline';
+    if (status == 0)      return 'Standby';
+    return 'Generating';
+  }
+
+  /// Human-readable fault description.
+  /// GoodWe uses sequential numeric error codes (not a bitmask).
+  /// Source: https://omvormerservice.be/index.html/en/error_code_goodwe-en/
+  ///         https://solairelectrical.com.au/pages/goodwe-inverter-fault-codes
+  String get faultLabel {
+    if (!hasFault && !hasWarning) return '';
+    final code = errorCode != 0 ? errorCode : warningCode;
+    const known = <int, String>{
+      1:  'SPI failure — internal communication error',
+      2:  'Memory (EEPROM) read/write failure',
+      3:  'Grid frequency out of range',
+      7:  'Relay self-check failure',
+      12: 'DSP ↔ LCD communication failure',
+      13: 'DC injection too high',
+      14: 'Isolation failure — insulation resistance too low. '
+          'Check PV wiring and panels for moisture ingress.',
+      15: 'Grid voltage out of range',
+      16: 'External cooling fan failure',
+      17: 'PV array over-voltage — check string configuration',
+      19: 'Over-temperature — check ventilation around inverter',
+      20: 'Internal fan failure',
+      21: 'DC bus over-voltage',
+      22: 'Residual current (ground fault) detected',
+      23: 'Grid disconnection / utility loss',
+      24: 'AC current sensor failure',
+      25: 'Relay check failure',
+      26: 'GFCI — leakage current exceeds safe limit',
+      30: 'Reference voltage fault (1.5 V rail)',
+      31: 'AC current sensor failure',
+      32: 'GFCI detection circuit failure',
+    };
+    return known[code] ?? 'Error $code — refer to your inverter manual '
+        'or contact your installer';
+  }
+
   factory InverterData.fromJson(Map<String, dynamic> json) {
     final d = json['d'] as Map<String, dynamic>? ?? {};
     final full = json['invert_full'] as Map<String, dynamic>? ?? {};
@@ -180,12 +232,14 @@ class InverterData {
       eday: (json['eday'] as num?)?.toDouble() ?? 0,
       emonth: (json['emonth'] as num?)?.toDouble() ?? 0,
       etotal: (json['etotal'] as num?)?.toDouble() ?? 0,
-      status: json['status'] as int? ?? -1,
+      status: json['status'] as int? ?? 0,
       pac: (full['pac'] as num?)?.toDouble() ?? 0,
       temperature: (json['tempperature'] as num?)?.toDouble() ?? 0,
       hTotal: (full['hour_total'] as num?)?.toDouble() ?? 0,
       lastRefreshTime: d['last_refresh_time'] as String? ?? '',
       workMode: d['work_mode'] as String? ?? '',
+      errorCode:   (full['error_code']   as num?)?.toInt() ?? 0,
+      warningCode: (full['warning_code'] as num?)?.toInt() ?? 0,
       vpv1: (full['vpv1'] as num?)?.toDouble() ?? 0,
       vpv2: (full['vpv2'] as num?)?.toDouble() ?? 0,
       ipv1: (full['ipv1'] as num?)?.toDouble() ?? 0,
