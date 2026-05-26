@@ -51,7 +51,7 @@ class EnvironmentalCard extends StatelessWidget {
                   value: data.co2Tonnes,
                   unit: 'tonnes',
                   label: 'CO₂ saved',
-                  comparison: '≈ ${(data.co2Tonnes / 0.147).round()} MUM→DEL flights',
+                  comparison: '≈ ${(data.co2Tonnes * 1000).toStringAsFixed(0)} kg CO₂',
                   color: AppColors.green,
                 ),
               ),

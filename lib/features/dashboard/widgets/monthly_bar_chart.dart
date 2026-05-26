@@ -286,7 +286,7 @@ class _BarChartPainter extends CustomPainter {
   final double average;
   final int bestIdx;
 
-  static const lp = 44.0; // left pad (y-axis labels)
+  static const lp = 36.0; // left pad (y-axis labels)
   static const rp = 8.0;
   static const tp = 20.0; // extra headroom for the extrapolation label
   static const bp = 22.0; // bottom pad (x-axis month labels)
@@ -304,24 +304,21 @@ class _BarChartPainter extends CustomPainter {
     required this.bestIdx,
   });
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  /// Full-month extrapolated kWh for the current (partial) month.
-  /// Returns [e.kwh] unchanged for every other entry or if ≥ 95 % through.
-  double _estKwh(DailyEnergy e) {
-    if (e.date.year != today.year || e.date.month != today.month) return e.kwh;
-    final daysInMonth = DateTime(today.year, today.month + 1, 0).day;
-    final fraction    = today.day / daysInMonth;
-    if (fraction >= 0.95 || e.kwh <= 0) return e.kwh;
-    return e.kwh / fraction;
-  }
-
   @override
   void paint(Canvas canvas, Size size) {
     if (entries.isEmpty) return;
     final chart = Rect.fromLTRB(lp, tp, size.width - rp, size.height - bp);
 
-    final maxKwh = entries.map((e) => e.kwh).reduce(math.max).clamp(1.0, double.infinity);
+    // Compute the extrapolated estimate for the current partial month so the
+    // projection block always fits inside the chart area.
+    double estForScale(DailyEnergy e) {
+      if (e.date.year != today.year || e.date.month != today.month) return e.kwh;
+      final days = DateTime(today.year, today.month + 1, 0).day;
+      final frac = today.day / days;
+      return (frac < 0.95 && e.kwh > 0 && today.day >= 3) ? e.kwh / frac : e.kwh;
+    }
+
+    final maxKwh = entries.map((e) => math.max(e.kwh, estForScale(e))).reduce(math.max).clamp(1.0, double.infinity);
     final scaledMax = maxKwh * 1.15; // 15 % headroom
 
     _drawGridAndYLabels(canvas, chart, scaledMax);
@@ -376,7 +373,59 @@ class _BarChartPainter extends CustomPainter {
               : AppColors.green;
       final color = baseColor.withValues(alpha: isSelected ? 1.0 : 0.80);
 
-      // ── Draw solid bar (or zero-stub) ───────────────────────────────────────
+      // ── Projected-remainder block drawn FIRST (behind the orange bar) ─────────
+      // Extends from estTop all the way to chart.bottom so the orange bar sits
+      // flush on top — no gap, looks like a single two-tone bar.
+      if (isCurrent) {
+        final daysInMonth = DateTime(today.year, today.month + 1, 0).day;
+        final fraction    = today.day / daysInMonth;
+        if (fraction < 0.95 && kwh > 0 && today.day >= 3) {
+          final estKwh = kwh / fraction;
+          final estH   = (estKwh / scaledMax) * chart.height;
+          final estTop = math.max(chart.top, chart.bottom - estH);
+          if (estTop < (barH < 1.5 ? chart.bottom - 2.0 : barTop) - 2) {
+            final blockRect = RRect.fromRectAndCorners(
+              Rect.fromLTRB(barLeft, estTop, barRight, chart.bottom),
+              topLeft:  Radius.circular(radius),
+              topRight: Radius.circular(radius),
+            );
+
+            // Solid fill
+            canvas.drawRRect(
+              blockRect,
+              Paint()..color = const Color(0xFF818CF8).withValues(alpha: 0.22),
+            );
+
+            // Diagonal hatch lines — only over the VISIBLE purple portion
+            // (estTop → solidTop). The orange bar covers everything below
+            // solidTop, so hatching there would bleed through its alpha.
+            final solidTop  = barH < 1.5 ? chart.bottom - 2.0 : barTop;
+            final hatchRect = RRect.fromRectAndCorners(
+              Rect.fromLTRB(barLeft, estTop, barRight, solidTop),
+              topLeft:  Radius.circular(radius),
+              topRight: Radius.circular(radius),
+            );
+            canvas.save();
+            canvas.clipRRect(hatchRect);
+            final hatchPaint = Paint()
+              ..color       = const Color(0xFF818CF8).withValues(alpha: 0.45)
+              ..strokeWidth = 0.8
+              ..style       = PaintingStyle.stroke;
+            const spacing = 4.0;
+            final hatchH  = solidTop - estTop;
+            for (double d = -hatchH; d < (barRight - barLeft); d += spacing) {
+              canvas.drawLine(
+                Offset(barLeft + d, estTop),
+                Offset(barLeft + d + hatchH, solidTop),
+                hatchPaint,
+              );
+            }
+            canvas.restore();
+          }
+        }
+      }
+
+      // ── Draw solid bar (or zero-stub) on top ────────────────────────────────
       if (barH < 1.5) {
         canvas.drawRRect(
           RRect.fromRectAndRadius(
@@ -411,31 +460,34 @@ class _BarChartPainter extends CustomPainter {
         }
       }
 
-      // ── Estimate label (current partial month only) ─────────────────────────
-      // Shows the projected full-month total above the bar in purple so it
-      // reads as a forecast value, distinct from the solid orange bar.
+      // ── Estimate label (current partial month only) ──────────────────────────
       if (isCurrent) {
         final daysInMonth = DateTime(today.year, today.month + 1, 0).day;
         final fraction    = today.day / daysInMonth;
-        if (fraction < 0.95 && kwh > 0) {
-          final estKwh  = kwh / fraction;
+        if (fraction < 0.95 && kwh > 0 && today.day >= 3) {
+          final estKwh = kwh / fraction;
+          final estTop = math.max(chart.top, chart.bottom - (estKwh / scaledMax) * chart.height);
+
+          // Estimate label — measure real text width first, then pin centre
+          // exactly on the bar centre so it's always properly aligned.
           final estLabel = estKwh >= 1000
               ? '~${(estKwh / 1000).toStringAsFixed(1)}M'
               : '~${estKwh.toStringAsFixed(0)}';
-
-          // Centre the label horizontally over the bar
-          const labelW = 44.0;
-          final labelX = barLeft + barW / 2 - labelW / 2;
-          final labelY = math.max(tp + 1.0, (barH < 1.5 ? chart.bottom - 2.0 : barTop) - 12.0);
-
-          _label(
-            canvas,
-            estLabel,
-            Offset(labelX, labelY),
-            maxWidth: labelW,
-            align: TextAlign.center,
-            color: const Color(0xFF818CF8), // purple — distinct from the orange bar
-          );
+          final tp2 = TextPainter(
+            text: TextSpan(
+              text: estLabel,
+              style: const TextStyle(
+                color: Color(0xFF818CF8),
+                fontSize: 9,
+                fontFamily: 'Outfit',
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          final barCenter = barLeft + barW / 2;
+          final labelY    = math.max(tp + 1.0, estTop - 11.0);
+          tp2.paint(canvas, Offset(barCenter - tp2.width / 2, labelY));
         }
       }
     }
@@ -464,15 +516,20 @@ class _BarChartPainter extends CustomPainter {
 
     for (int i = 0; i < n; i++) {
       if (i % step != 0) continue;
-      final e   = entries[i];
-      final cx  = chart.left + i * slotW + slotW / 2;
-      _label(
-        canvas,
-        _monthAbbr[e.date.month - 1],
-        Offset(cx - 10, chart.bottom + 5),
-        maxWidth: 22,
-        align: TextAlign.center,
-      );
+      final e    = entries[i];
+      final cx   = chart.left + i * slotW + slotW / 2;
+      final tp   = TextPainter(
+        text: TextSpan(
+          text: _monthAbbr[e.date.month - 1],
+          style: const TextStyle(
+            color: Color(0xFF4B5E7A),
+            fontSize: 9,
+            fontFamily: 'Outfit',
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(cx - tp.width / 2, chart.bottom + 5));
     }
   }
 

@@ -14,8 +14,11 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _emailController     = TextEditingController();
+  final _passwordController  = TextEditingController();
+  final _stationIdController = TextEditingController(
+    text: CredentialsStorage.defaultStationId,
+  );
 
   bool _isLoading = false;
   bool _obscurePassword = true;
@@ -32,8 +35,9 @@ class _LoginScreenState extends State<LoginScreen> {
     final creds = await storage.load();
     if (!mounted || creds == null) return;
     setState(() {
-      _emailController.text = creds.email;
-      _passwordController.text = creds.password;
+      _emailController.text     = creds.email;
+      _passwordController.text  = creds.password;
+      _stationIdController.text = creds.stationId;
     });
   }
 
@@ -41,6 +45,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _stationIdController.dispose();
     super.dispose();
   }
 
@@ -58,9 +63,15 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      final stationId = _stationIdController.text.trim();
       await context.read<AuthRepository>().login(
             _emailController.text.trim(),
             _passwordController.text,
+          );
+      if (!mounted) return;
+      // Persist station ID alongside credentials so the dashboard can read it.
+      await context.read<CredentialsStorage>().saveStationId(
+            stationId.isEmpty ? CredentialsStorage.defaultStationId : stationId,
           );
 
       if (!mounted) return;
@@ -97,6 +108,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 _buildEmailField(),
                 const SizedBox(height: 16),
                 _buildPasswordField(),
+                const SizedBox(height: 16),
+                _buildStationIdField(),
                 const SizedBox(height: 12),
                 if (_error != null) _buildError(),
                 const SizedBox(height: 24),
@@ -174,6 +187,25 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
       validator: (v) {
         if (v == null || v.isEmpty) return 'Password is required';
+        return null;
+      },
+    );
+  }
+
+  Widget _buildStationIdField() {
+    return TextFormField(
+      controller: _stationIdController,
+      autocorrect: false,
+      enableSuggestions: false,
+      decoration: const InputDecoration(
+        labelText: 'Power Plant ID',
+        hintText: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+        prefixIcon: Icon(Icons.solar_power_outlined, color: AppColors.textSecondary),
+        helperText: 'Found in SEMS Portal → Plant Details',
+        helperStyle: TextStyle(color: AppColors.textSecondary, fontSize: 11),
+      ),
+      validator: (v) {
+        if (v == null || v.trim().isEmpty) return 'Plant ID is required';
         return null;
       },
     );

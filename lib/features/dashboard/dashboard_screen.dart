@@ -18,9 +18,8 @@ import 'widgets/monthly_bar_chart.dart';
 import '../../data/remote/api_logger.dart';
 import '../../data/models/demo_data.dart';
 import '../../data/models/monthly_energy.dart';
+import '../../data/local/credentials_storage.dart';
 import '../alarm/alarm_history_screen.dart';
-
-const _stationId = 'e3c2c54c-c872-4fdb-8147-99381e685cff';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -32,6 +31,8 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
   StationMonitor? _monitor;
+  String    _stationId     = CredentialsStorage.defaultStationId;
+  DateTime? _lastRefreshed;
 
   // ── Intra-day power curve state ──────────────────────────────────────────
   List<PacSample> _pacSamples = [];
@@ -59,7 +60,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     );
-    _fetchData();
+    _loadStationId().then((_) => _fetchData());
     _loadEarningsRate();
   }
 
@@ -93,6 +94,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             _selectedPacDate = now;
             _monthlyEnergy   = DemoData.monthlyEnergy(now.year);
             _selectedYear    = now.year;
+            _lastRefreshed   = now;
           });
           _staggerCtrl.forward();
         }
@@ -166,6 +168,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           _selectedPacDate = now;
           _monthlyEnergy   = _filterToYear(monthlyEnergy, now.year);
           _selectedYear    = now.year;
+          _lastRefreshed   = now;
         });
         _staggerCtrl.forward();
       }
@@ -186,6 +189,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _loadStationId() async {
+    final id = await context.read<CredentialsStorage>().loadStationId();
+    if (mounted) setState(() => _stationId = id);
   }
 
   Future<void> _loadEarningsRate() async {
@@ -211,6 +219,11 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ── Intra-day PAC navigation ──────────────────────────────────────────────
+
+  String _formatRefreshTime(DateTime t) {
+    String p(int n) => n.toString().padLeft(2, '0');
+    return '${t.year}-${p(t.month)}-${p(t.day)} ${p(t.hour)}:${p(t.minute)}:${p(t.second)}';
+  }
 
   String _formatPacDate(DateTime date) {
     final now = DateTime.now();
@@ -279,6 +292,24 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _onNextDay() {
     final next = _selectedPacDate.add(const Duration(days: 1));
     _fetchPacForDate(next);
+  }
+
+  Future<void> _onPickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: now.subtract(const Duration(days: 1)),
+      firstDate: DateTime(2020),
+      lastDate: now,
+      helpText: 'Select a date',
+    );
+    if (picked == null || !mounted) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _DateCurveSheet(date: picked, stationId: _stationId),
+    );
   }
 
   // ── Annual energy navigation ──────────────────────────────────────────────
@@ -624,6 +655,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     isLoading: _isPacLoading,
                     onPrevDay: _onPrevDay,
                     onNextDay: _isPacToday ? null : _onNextDay,
+                    onPickDate: _onPickDate,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -785,12 +817,26 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 const SizedBox(height: 16),
 
-                // Last updated
+                // Timestamps footer
                 Center(
-                  child: Text(
-                    'Last updated: ${inverter?.lastRefreshTime ?? m.info.time}',
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 11),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Inverter data: ${inverter?.lastRefreshTime ?? m.info.time}',
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 11),
+                      ),
+                      if (_lastRefreshed != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          'App refreshed: ${_formatRefreshTime(_lastRefreshed!)}',
+                          style: TextStyle(
+                            color: AppColors.textSecondary.withValues(alpha: 0.6),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ]),
@@ -1090,6 +1136,151 @@ class _EarningsRateDialogState extends State<_EarningsRateDialog> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── Date-picker power curve sheet ────────────────────────────────────────────
+// Opens via the calendar icon on the main Power Curve card.
+// Shows the chart for a single chosen date with no day navigation.
+
+class _DateCurveSheet extends StatefulWidget {
+  final DateTime date;
+  final String stationId;
+
+  const _DateCurveSheet({required this.date, required this.stationId});
+
+  @override
+  State<_DateCurveSheet> createState() => _DateCurveSheetState();
+}
+
+class _DateCurveSheetState extends State<_DateCurveSheet> {
+  List<PacSample> _samples = [];
+  bool _isLoading = true;
+
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  String get _label =>
+      '${widget.date.day} ${_months[widget.date.month - 1]} ${widget.date.year}';
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final auth = context.read<AuthRepository>();
+    try {
+      if (auth.isDemoMode) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
+        setState(() {
+          _samples   = DemoData.pacSamples(date: widget.date);
+          _isLoading = false;
+        });
+        return;
+      }
+      if (auth.currentSession == null) {
+        final ok = await auth.tryRelogin();
+        if (!mounted) return;
+        if (!ok) {
+          setState(() => _isLoading = false);
+          return;
+        }
+      }
+      final samples = await context.read<StationRepository>().fetchPacByDay(
+          auth.currentSession!, widget.stationId, widget.date);
+      if (mounted) setState(() { _samples = samples; _isLoading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle
+            Center(
+              child: Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 4),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            // Sheet header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 8, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.show_chart_rounded,
+                      color: AppColors.accent, size: 16),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Power Curve',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _label,
+                      style: const TextStyle(
+                        color: AppColors.accent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        color: AppColors.textSecondary, size: 20),
+                    onPressed: () => Navigator.of(context).pop(),
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
+            ),
+            // Chart — no navigation arrows in this view
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              child: PowerCurveCard(
+                samples:   _samples,
+                dateLabel: _label,
+                isLoading: _isLoading,
+                // onPrevDay / onNextDay intentionally omitted → nav hidden
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
