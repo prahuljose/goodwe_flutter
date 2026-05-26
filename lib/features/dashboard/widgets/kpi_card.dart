@@ -31,7 +31,7 @@ class KpiCard extends StatelessWidget {
         border: Border.all(color: AppColors.divider),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
             padding: const EdgeInsets.all(7),
@@ -53,9 +53,11 @@ class KpiCard extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(unit,
+              textAlign: TextAlign.center,
               style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w500)),
           const SizedBox(height: 3),
           Text(label,
+              textAlign: TextAlign.center,
               style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
         ],
       ),
@@ -64,6 +66,110 @@ class KpiCard extends StatelessWidget {
 }
 
 // ─── Hero live power card ─────────────────────────────────────────────────
+
+void _showCapacityInfo(BuildContext context) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: AppColors.card,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (_) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Row(
+            children: [
+              Icon(Icons.info_outline_rounded, color: AppColors.accent, size: 20),
+              SizedBox(width: 10),
+              Text(
+                'Capacity Used',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.cardAlt,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppColors.divider),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'What does this mean?',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'This shows how much of your solar system\'s total installed '
+                  'capacity is currently being used. It is calculated as:\n\n'
+                  '  Current output (W)  ÷  Installed capacity (W)  × 100\n\n'
+                  'For example, if your system is rated at 5 kW and is currently '
+                  'generating 3.5 kW, the capacity used is 70%.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 13,
+                    height: 1.55,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.accent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.accent.withValues(alpha: 0.25)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.lightbulb_outline_rounded, color: AppColors.accent, size: 15),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'A system rarely hits 100% — real-world output is affected '
+                    'by panel temperature, dust, shading, and inverter efficiency.',
+                    style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 class LivePowerCard extends StatelessWidget {
   final double pac;
@@ -150,8 +256,20 @@ class LivePowerCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Capacity used',
-                    style: TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+                GestureDetector(
+                  onTap: () => _showCapacityInfo(context),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('Capacity used',
+                          style: TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+                      const SizedBox(width: 4),
+                      Icon(Icons.info_outline_rounded,
+                          color: AppColors.textSecondary.withValues(alpha: 0.5),
+                          size: 11),
+                    ],
+                  ),
+                ),
                 Text('${(loadPct * 100).toStringAsFixed(0)}%',
                     style: const TextStyle(
                         color: AppColors.accent,

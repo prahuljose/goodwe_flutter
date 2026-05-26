@@ -190,16 +190,236 @@ List<Widget> _errorCodeRows() {
   )).toList();
 }
 
+void _showLiveAlarms(BuildContext context, InverterData inverter) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: AppColors.background,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    isScrollControlled: true,
+    builder: (_) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Handle
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: (inverter.hasFault
+                          ? const Color(0xFFF87171)
+                          : inverter.hasWarning
+                              ? const Color(0xFFFBBF24)
+                              : AppColors.green)
+                      .withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  inverter.hasFault
+                      ? Icons.error_outline_rounded
+                      : inverter.hasWarning
+                          ? Icons.warning_amber_rounded
+                          : Icons.shield_outlined,
+                  color: inverter.hasFault
+                      ? const Color(0xFFF87171)
+                      : inverter.hasWarning
+                          ? const Color(0xFFFBBF24)
+                          : AppColors.green,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Text(
+                'Live Alarms',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+
+          if (!inverter.hasFault && !inverter.hasWarning)
+            // ── All clear ────────────────────────────────────────────────
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppColors.green.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.green.withValues(alpha: 0.25)),
+              ),
+              child: const Column(
+                children: [
+                  Icon(Icons.check_circle_outline_rounded,
+                      color: AppColors.green, size: 36),
+                  SizedBox(height: 12),
+                  Text(
+                    'No active alarms',
+                    style: TextStyle(
+                      color: AppColors.green,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Your inverter is running normally\nwith no reported faults or warnings.',
+                    style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            // ── Active fault/warning ──────────────────────────────────────
+            if (inverter.hasFault) ...[
+              _LiveAlarmTile(
+                code: inverter.errorCode,
+                label: inverter.faultLabel,
+                isFault: true,
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (inverter.hasWarning) ...[
+              _LiveAlarmTile(
+                code: inverter.warningCode,
+                label: inverter.faultLabel,
+                isFault: false,
+              ),
+              const SizedBox(height: 10),
+            ],
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.cardAlt,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.link_rounded, color: AppColors.accent, size: 15),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Full fault documentation: GoodWe inverter manual '
+                      'or semsportal.com → Alarms tab.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 11,
+                          height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 14),
+          // Live note
+          Row(
+            children: [
+              const Icon(Icons.access_time_rounded,
+                  color: AppColors.textSecondary, size: 12),
+              const SizedBox(width: 6),
+              Text(
+                'Last updated: ${inverter.lastRefreshTime}',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _LiveAlarmTile extends StatelessWidget {
+  final int code;
+  final String label;
+  final bool isFault;
+
+  const _LiveAlarmTile({
+    required this.code,
+    required this.label,
+    required this.isFault,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isFault ? const Color(0xFFF87171) : const Color(0xFFFBBF24);
+    final icon  = isFault ? Icons.error_outline_rounded : Icons.warning_amber_rounded;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.30)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${isFault ? "Fault" : "Warning"} · Code $code',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (label.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class InverterCard extends StatelessWidget {
   final InverterData inverter;
-
-  /// Called when user taps "Alarm History". Dashboard handles the navigation.
-  final VoidCallback? onAlarmHistoryTap;
 
   const InverterCard({
     super.key,
     required this.inverter,
-    this.onAlarmHistoryTap,
   });
 
   @override
@@ -296,34 +516,51 @@ class InverterCard extends StatelessWidget {
             ],
           ),
 
-          // ── Alarm history button ───────────────────────────────────────
-          if (onAlarmHistoryTap != null) ...[
-            const SizedBox(height: 16),
-            const Divider(color: AppColors.divider, height: 1),
-            const SizedBox(height: 12),
-            GestureDetector(
-              onTap: onAlarmHistoryTap,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.history_rounded,
-                      color: AppColors.textSecondary, size: 14),
-                  SizedBox(width: 6),
-                  Text(
-                    'View Alarm History',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
+          // ── Live alarms button ─────────────────────────────────────────
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.divider, height: 1),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () => _showLiveAlarms(context, inverter),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  inverter.hasFault
+                      ? Icons.error_outline_rounded
+                      : inverter.hasWarning
+                          ? Icons.warning_amber_rounded
+                          : Icons.shield_outlined,
+                  color: inverter.hasFault
+                      ? const Color(0xFFF87171)
+                      : inverter.hasWarning
+                          ? const Color(0xFFFBBF24)
+                          : AppColors.textSecondary,
+                  size: 14,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  inverter.hasFault
+                      ? 'Active Fault — Tap to view'
+                      : inverter.hasWarning
+                          ? 'Active Warning — Tap to view'
+                          : 'View Live Alarms',
+                  style: TextStyle(
+                    color: inverter.hasFault
+                        ? const Color(0xFFF87171)
+                        : inverter.hasWarning
+                            ? const Color(0xFFFBBF24)
+                            : AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
                   ),
-                  SizedBox(width: 4),
-                  Icon(Icons.chevron_right_rounded,
-                      color: AppColors.textSecondary, size: 14),
-                ],
-              ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right_rounded,
+                    color: AppColors.textSecondary, size: 14),
+              ],
             ),
-          ],
+          ),
         ],
       ),
     );

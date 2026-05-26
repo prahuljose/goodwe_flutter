@@ -77,6 +77,18 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
       ? null
       : widget.samples.reduce((a, b) => a.pac > b.pac ? a : b);
 
+  // Trapezoid integration over the full (unclipped) sample list.
+  double get _totalKwh {
+    final s = widget.samples;
+    if (s.length < 2) return 0;
+    double wh = 0;
+    for (int i = 0; i < s.length - 1; i++) {
+      final dtHours = s[i + 1].time.difference(s[i].time).inSeconds / 3600.0;
+      wh += s[i].pac * dtHours;
+    }
+    return wh / 1000;
+  }
+
   List<_AnomalyEvent> get _anomalies {
     final s = widget.samples;
     if (s.isEmpty) return const [];
@@ -161,6 +173,7 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
 
     final isEmpty = !widget.isLoading &&
         (visible.isEmpty || peak == null || peak.pac == 0);
+    final totalKwh = widget.isLoading ? null : _totalKwh;
 
     return Container(
       decoration: BoxDecoration(
@@ -171,7 +184,7 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildHeader(peak),
+          _buildHeader(peak, totalKwh),
           if (widget.isLoading)
             const SizedBox(
               height: 200,
@@ -341,13 +354,13 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
     );
   }
 
-  Widget _buildHeader(PacSample? peak) {
+  Widget _buildHeader(PacSample? peak, double? totalKwh) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 12, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Row 1: title · info button · peak badge ─────────────────────
+          // ── Row 1: title · total badge · peak badge · info button ────────
           Row(
             children: [
               const Icon(Icons.show_chart_rounded,
@@ -362,8 +375,28 @@ class _PowerCurveCardState extends State<PowerCurveCard> {
                 ),
               ),
               const Spacer(),
+              // Total kWh badge
+              if (totalKwh != null && totalKwh > 0) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.green.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Total  ${totalKwh.toStringAsFixed(2)} kWh',
+                    style: const TextStyle(
+                      color: AppColors.green,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
               // Peak badge
-              if (peak != null) ...[
+              if (peak != null && peak.pac > 0) ...[
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 3),

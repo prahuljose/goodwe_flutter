@@ -19,7 +19,6 @@ import '../../data/remote/api_logger.dart';
 import '../../data/models/demo_data.dart';
 import '../../data/models/monthly_energy.dart';
 import '../../data/local/credentials_storage.dart';
-import '../alarm/alarm_history_screen.dart';
 
 // ─── Dashboard sections ────────────────────────────────────────────────────
 
@@ -28,7 +27,8 @@ enum DashboardSection {
   energyGeneration,
   earnings,
   monthlyPerformance,
-  lifetimeImpact,
+  todayImpact,       // "Today's X kWh powered…"
+  lifetimeImpact,    // Lifetime CO₂ / income / energy equivalents
   environmental,
   forecast,
   inverterDetails,
@@ -46,7 +46,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   StationMonitor? _monitor;
   String    _stationId     = CredentialsStorage.defaultStationId;
   DateTime? _lastRefreshed;
-  List<DashboardSection> _sectionOrder = DashboardSection.values;
+  List<DashboardSection> _sectionOrder  = DashboardSection.values.toList();
+  Set<DashboardSection>  _hiddenSections = {};
 
   // ── Intra-day power curve state ──────────────────────────────────────────
   List<PacSample> _pacSamples = [];
@@ -77,6 +78,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     _loadStationId().then((_) => _fetchData());
     _loadEarningsRate();
     _loadSectionOrder();
+    _loadHiddenSections();
   }
 
   @override
@@ -238,16 +240,40 @@ class _DashboardScreenState extends State<DashboardScreen>
         .saveCardOrder(_sectionOrder.map((s) => s.name).toList());
   }
 
+  Future<void> _loadHiddenSections() async {
+    final stored = await context.read<SettingsStorage>().loadHiddenSections();
+    if (!mounted || stored == null) return;
+    final nameMap = {for (final s in DashboardSection.values) s.name: s};
+    final parsed = stored
+        .map((n) => nameMap[n])
+        .whereType<DashboardSection>()
+        .toSet();
+    setState(() => _hiddenSections = parsed);
+  }
+
+  Future<void> _saveHiddenSections() async {
+    await context
+        .read<SettingsStorage>()
+        .saveHiddenSections(_hiddenSections.map((s) => s.name).toSet());
+  }
+
   Future<void> _openCustomize() async {
-    final result = await showModalBottomSheet<List<DashboardSection>>(
+    final result = await showModalBottomSheet<
+        ({List<DashboardSection> order, Set<DashboardSection> hidden})>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _CustomizeOrderSheet(current: _sectionOrder),
+      builder: (_) => _CustomizeOrderSheet(
+        current: _sectionOrder,
+        hidden: _hiddenSections,
+      ),
     );
     if (result == null || !mounted) return;
-    setState(() => _sectionOrder = result);
-    await _saveSectionOrder();
+    setState(() {
+      _sectionOrder   = result.order;
+      _hiddenSections = result.hidden;
+    });
+    await Future.wait([_saveSectionOrder(), _saveHiddenSections()]);
   }
 
   // ── Session helper ────────────────────────────────────────────────────────
@@ -425,16 +451,6 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _onPrevYear() => _fetchMonthlyForYear(_selectedYear - 1);
   void _onNextYear() => _fetchMonthlyForYear(_selectedYear + 1);
-
-  // ── Alarm history ─────────────────────────────────────────────────────────
-
-  void _openAlarmHistory() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AlarmHistoryScreen(stationId: _stationId),
-      ),
-    );
-  }
 
   Future<void> _showEarningsDialog() async {
     final result = await showDialog<double>(
@@ -622,10 +638,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     final inverter = m.primaryInverter;
     final now = DateTime.now();
 
-    // Build section widgets in the user's chosen order.
+    // Build section widgets in the user's chosen order, skipping hidden ones.
     final items = <Widget>[];
     for (int i = 0; i < _sectionOrder.length; i++) {
-      final w = _buildSectionWidget(_sectionOrder[i], m, inverter, now);
+      final section = _sectionOrder[i];
+      if (_hiddenSections.contains(section)) continue;
+      final w = _buildSectionWidget(section, m, inverter, now);
       if (w == null) continue;
       if (items.isNotEmpty) items.add(const SizedBox(height: 16));
       items.add(_Staggered(ctrl: _staggerCtrl, index: i, child: w));
@@ -699,30 +717,20 @@ class _DashboardScreenState extends State<DashboardScreen>
           dayOfMonth: now.day,
           forecast: m.forecast,
         );
+      case DashboardSection.todayImpact:
+        return TodayInsightsCard(todayKwh: m.kpi.todayKwh);
       case DashboardSection.lifetimeImpact:
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TodayInsightsCard(todayKwh: m.kpi.todayKwh),
-            const SizedBox(height: 16),
-            Co2InsightsCard(
-              co2Tonnes: m.environmental.co2Tonnes,
-              totalKwh: m.kpi.totalKwh,
-              totalIncome: m.kpi.totalIncome,
-            ),
-          ],
+        return Co2InsightsCard(
+          co2Tonnes: m.environmental.co2Tonnes,
+          totalKwh: m.kpi.totalKwh,
+          totalIncome: m.kpi.totalIncome,
         );
       case DashboardSection.environmental:
         return EnvironmentalCard(data: m.environmental);
       case DashboardSection.forecast:
         return WeatherSection(forecast: m.forecast);
       case DashboardSection.inverterDetails:
-        return inverter != null
-            ? InverterCard(
-                inverter: inverter,
-                onAlarmHistoryTap: _openAlarmHistory,
-              )
-            : null;
+        return inverter != null ? InverterCard(inverter: inverter) : null;
     }
   }
 
@@ -1172,7 +1180,12 @@ class _EarningsRateDialogState extends State<_EarningsRateDialog> {
 
 class _CustomizeOrderSheet extends StatefulWidget {
   final List<DashboardSection> current;
-  const _CustomizeOrderSheet({required this.current});
+  final Set<DashboardSection> hidden;
+
+  const _CustomizeOrderSheet({
+    required this.current,
+    required this.hidden,
+  });
 
   @override
   State<_CustomizeOrderSheet> createState() => _CustomizeOrderSheetState();
@@ -1180,44 +1193,49 @@ class _CustomizeOrderSheet extends StatefulWidget {
 
 class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
   late List<DashboardSection> _order;
+  late Set<DashboardSection>  _hidden;
 
   @override
   void initState() {
     super.initState();
-    _order = List.from(widget.current);
+    _order  = List.from(widget.current);
+    _hidden = Set.from(widget.hidden);
   }
 
   static String _label(DashboardSection s) => switch (s) {
-        DashboardSection.liveOutput        => 'Live Output',
-        DashboardSection.energyGeneration  => 'Energy Generation',
-        DashboardSection.earnings          => 'Earnings',
+        DashboardSection.liveOutput         => 'Live Output',
+        DashboardSection.energyGeneration   => 'Energy Generation',
+        DashboardSection.earnings           => 'Earnings',
         DashboardSection.monthlyPerformance => 'Monthly Performance',
-        DashboardSection.lifetimeImpact    => 'Your Lifetime Impact',
-        DashboardSection.environmental     => 'Environmental Impact',
-        DashboardSection.forecast          => '7-Day Forecast',
-        DashboardSection.inverterDetails   => 'Inverter Details',
+        DashboardSection.todayImpact        => "Today's Energy Impact",
+        DashboardSection.lifetimeImpact     => 'Your Lifetime Impact',
+        DashboardSection.environmental      => 'Environmental Impact',
+        DashboardSection.forecast           => '7-Day Forecast',
+        DashboardSection.inverterDetails    => 'Inverter Details',
       };
 
   static String _subtitle(DashboardSection s) => switch (s) {
-        DashboardSection.liveOutput        => 'Current power output',
-        DashboardSection.energyGeneration  => 'KPIs · Power curve · Annual chart',
-        DashboardSection.earnings          => 'Today & lifetime income',
+        DashboardSection.liveOutput         => 'Current power output',
+        DashboardSection.energyGeneration   => 'KPIs · Power curve · Annual chart',
+        DashboardSection.earnings           => 'Today & lifetime income',
         DashboardSection.monthlyPerformance => 'PR ratio & monthly outlook',
-        DashboardSection.lifetimeImpact    => 'Insights & CO₂ savings',
-        DashboardSection.environmental     => 'Trees, coal & CO₂ equivalents',
-        DashboardSection.forecast          => 'Next 7 days of weather',
-        DashboardSection.inverterDetails   => 'Technical inverter data',
+        DashboardSection.todayImpact        => "Phones, fans, AC hours powered today",
+        DashboardSection.lifetimeImpact     => 'CO₂ savings & lifetime equivalents',
+        DashboardSection.environmental      => 'Trees, coal & CO₂ equivalents',
+        DashboardSection.forecast           => 'Next 7 days of weather',
+        DashboardSection.inverterDetails    => 'Technical inverter data',
       };
 
   static IconData _icon(DashboardSection s) => switch (s) {
-        DashboardSection.liveOutput        => Icons.bolt_rounded,
-        DashboardSection.energyGeneration  => Icons.show_chart_rounded,
-        DashboardSection.earnings          => Icons.currency_rupee,
+        DashboardSection.liveOutput         => Icons.bolt_rounded,
+        DashboardSection.energyGeneration   => Icons.show_chart_rounded,
+        DashboardSection.earnings           => Icons.currency_rupee,
         DashboardSection.monthlyPerformance => Icons.bar_chart_rounded,
-        DashboardSection.lifetimeImpact    => Icons.auto_awesome_rounded,
-        DashboardSection.environmental     => Icons.eco_rounded,
-        DashboardSection.forecast          => Icons.wb_cloudy_outlined,
-        DashboardSection.inverterDetails   => Icons.memory_rounded,
+        DashboardSection.todayImpact        => Icons.wb_sunny_rounded,
+        DashboardSection.lifetimeImpact     => Icons.auto_awesome_rounded,
+        DashboardSection.environmental      => Icons.eco_rounded,
+        DashboardSection.forecast           => Icons.wb_cloudy_outlined,
+        DashboardSection.inverterDetails    => Icons.memory_rounded,
       };
 
   @override
@@ -1272,7 +1290,7 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
                           ),
                         ),
                         Text(
-                          'Drag to reorder sections',
+                          'Drag to reorder  ·  Eye to hide/show',
                           style: TextStyle(
                             color: AppColors.textSecondary,
                             fontSize: 11,
@@ -1282,7 +1300,10 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () => Navigator.pop(context, _order),
+                    onPressed: () => Navigator.pop(
+                      context,
+                      (order: _order, hidden: _hidden),
+                    ),
                     child: const Text(
                       'Done',
                       style: TextStyle(
@@ -1345,6 +1366,7 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
                 },
                 itemBuilder: (ctx, idx) {
                   final section = _order[idx];
+                  final isHidden = _hidden.contains(section);
                   return ListTile(
                     key: ValueKey(section),
                     contentPadding:
@@ -1352,29 +1374,73 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
                     leading: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: AppColors.cardAlt,
+                        color: isHidden
+                            ? AppColors.divider.withValues(alpha: 0.5)
+                            : AppColors.cardAlt,
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Icon(_icon(section),
-                          color: AppColors.textSecondary, size: 18),
+                      child: Icon(
+                        _icon(section),
+                        color: isHidden
+                            ? AppColors.textSecondary.withValues(alpha: 0.4)
+                            : AppColors.textSecondary,
+                        size: 18,
+                      ),
                     ),
                     title: Text(
                       _label(section),
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: isHidden
+                            ? AppColors.textSecondary.withValues(alpha: 0.45)
+                            : AppColors.textPrimary,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
+                        decoration: isHidden
+                            ? TextDecoration.lineThrough
+                            : TextDecoration.none,
+                        decorationColor:
+                            AppColors.textSecondary.withValues(alpha: 0.4),
                       ),
                     ),
                     subtitle: Text(
                       _subtitle(section),
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        color: isHidden
+                            ? AppColors.textSecondary.withValues(alpha: 0.3)
+                            : AppColors.textSecondary,
                         fontSize: 11,
                       ),
                     ),
-                    trailing: const Icon(Icons.drag_handle_rounded,
-                        color: AppColors.textSecondary, size: 22),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Visibility toggle
+                        GestureDetector(
+                          onTap: () => setState(() {
+                            if (isHidden) {
+                              _hidden.remove(section);
+                            } else {
+                              _hidden.add(section);
+                            }
+                          }),
+                          child: Padding(
+                            padding: const EdgeInsets.all(6),
+                            child: Icon(
+                              isHidden
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                              color: isHidden
+                                  ? AppColors.textSecondary.withValues(alpha: 0.4)
+                                  : AppColors.textSecondary,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.drag_handle_rounded,
+                            color: AppColors.textSecondary, size: 22),
+                      ],
+                    ),
                   );
                 },
               ),

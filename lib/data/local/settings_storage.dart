@@ -30,4 +30,19 @@ class SettingsStorage {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getStringList(_cardOrderKey);
   }
+
+  // ── Hidden dashboard sections ─────────────────────────────────────────────
+
+  static const _hiddenSectionsKey = 'dashboard_hidden_sections';
+
+  Future<void> saveHiddenSections(Set<String> hidden) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_hiddenSectionsKey, hidden.toList());
+  }
+
+  Future<Set<String>?> loadHiddenSections() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_hiddenSectionsKey);
+    return list?.toSet();
+  }
 }
