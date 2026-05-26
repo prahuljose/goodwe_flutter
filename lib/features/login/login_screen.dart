@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../repositories/auth_repository.dart';
 import '../../data/local/credentials_storage.dart';
@@ -75,16 +76,22 @@ class _LoginScreenState extends State<LoginScreen> {
           );
 
       if (!mounted) return;
+      // Signal the OS to offer saving this credential pair.
+      TextInput.finishAutofillContext(shouldSave: true);
       Navigator.of(context).pushReplacementNamed('/dashboard');
     } on SemsNetworkError {
+      TextInput.finishAutofillContext(shouldSave: false);
       setState(() => _error =
           'No internet connection.\nCheck your WiFi or mobile data.');
     } on SemsServerError catch (e) {
+      TextInput.finishAutofillContext(shouldSave: false);
       setState(() => _error = 'Server error (${e.statusCode}). Try again later.');
     } on SemsApiError catch (e) {
       // Covers wrong password, account not found, etc.
+      TextInput.finishAutofillContext(shouldSave: false);
       setState(() => _error = e.message);
     } catch (e) {
+      TextInput.finishAutofillContext(shouldSave: false);
       setState(() => _error = 'Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -105,9 +112,15 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 48),
                 _buildHeader(),
                 const SizedBox(height: 48),
-                _buildEmailField(),
-                const SizedBox(height: 16),
-                _buildPasswordField(),
+                AutofillGroup(
+                  child: Column(
+                    children: [
+                      _buildEmailField(),
+                      const SizedBox(height: 16),
+                      _buildPasswordField(),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 16),
                 _buildStationIdField(),
                 const SizedBox(height: 12),
@@ -158,6 +171,7 @@ class _LoginScreenState extends State<LoginScreen> {
       controller: _emailController,
       keyboardType: TextInputType.emailAddress,
       autocorrect: false,
+      autofillHints: const [AutofillHints.email, AutofillHints.username],
       decoration: const InputDecoration(
         labelText: 'Email',
         prefixIcon: Icon(Icons.email_outlined, color: AppColors.textSecondary),
@@ -174,6 +188,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return TextFormField(
       controller: _passwordController,
       obscureText: _obscurePassword,
+      autofillHints: const [AutofillHints.password],
       decoration: InputDecoration(
         labelText: 'Password',
         prefixIcon: const Icon(Icons.lock_outline, color: AppColors.textSecondary),

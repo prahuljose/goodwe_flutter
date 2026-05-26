@@ -21,6 +21,19 @@ import '../../data/models/monthly_energy.dart';
 import '../../data/local/credentials_storage.dart';
 import '../alarm/alarm_history_screen.dart';
 
+// ─── Dashboard sections ────────────────────────────────────────────────────
+
+enum DashboardSection {
+  liveOutput,
+  energyGeneration,
+  earnings,
+  monthlyPerformance,
+  lifetimeImpact,
+  environmental,
+  forecast,
+  inverterDetails,
+}
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -33,6 +46,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   StationMonitor? _monitor;
   String    _stationId     = CredentialsStorage.defaultStationId;
   DateTime? _lastRefreshed;
+  List<DashboardSection> _sectionOrder = DashboardSection.values;
 
   // ── Intra-day power curve state ──────────────────────────────────────────
   List<PacSample> _pacSamples = [];
@@ -62,6 +76,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
     _loadStationId().then((_) => _fetchData());
     _loadEarningsRate();
+    _loadSectionOrder();
   }
 
   @override
@@ -200,6 +215,39 @@ class _DashboardScreenState extends State<DashboardScreen>
     final storage = context.read<SettingsStorage>();
     final rate = await storage.loadEarningsRate();
     if (mounted) setState(() => _earningsRate = rate);
+  }
+
+  Future<void> _loadSectionOrder() async {
+    final stored = await context.read<SettingsStorage>().loadCardOrder();
+    if (!mounted || stored == null) return;
+    final nameMap = {for (final s in DashboardSection.values) s.name: s};
+    final parsed = stored
+        .map((n) => nameMap[n])
+        .whereType<DashboardSection>()
+        .toList();
+    // Append any new sections not present in the saved list (app updates).
+    for (final s in DashboardSection.values) {
+      if (!parsed.contains(s)) parsed.add(s);
+    }
+    setState(() => _sectionOrder = parsed);
+  }
+
+  Future<void> _saveSectionOrder() async {
+    await context
+        .read<SettingsStorage>()
+        .saveCardOrder(_sectionOrder.map((s) => s.name).toList());
+  }
+
+  Future<void> _openCustomize() async {
+    final result = await showModalBottomSheet<List<DashboardSection>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _CustomizeOrderSheet(current: _sectionOrder),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _sectionOrder = result);
+    await _saveSectionOrder();
   }
 
   // ── Session helper ────────────────────────────────────────────────────────
@@ -574,6 +622,15 @@ class _DashboardScreenState extends State<DashboardScreen>
     final inverter = m.primaryInverter;
     final now = DateTime.now();
 
+    // Build section widgets in the user's chosen order.
+    final items = <Widget>[];
+    for (int i = 0; i < _sectionOrder.length; i++) {
+      final w = _buildSectionWidget(_sectionOrder[i], m, inverter, now);
+      if (w == null) continue;
+      if (items.isNotEmpty) items.add(const SizedBox(height: 16));
+      items.add(_Staggered(ctrl: _staggerCtrl, index: i, child: w));
+    }
+
     return RefreshIndicator(
       color: AppColors.accent,
       backgroundColor: AppColors.card,
@@ -585,238 +642,8 @@ class _DashboardScreenState extends State<DashboardScreen>
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
-                // Live power hero
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 0,
-                  child: LivePowerCard(
-                    pac: m.kpi.pac,
-                    status: m.info.status,
-                    workMode: inverter?.workMode ?? '',
-                    capacityKw: m.info.capacity,
-                  ),
-                ),
+                ...items,
                 const SizedBox(height: 16),
-
-                // Energy KPIs
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 1,
-                  child: _SectionLabel(label: 'Energy Generation'),
-                ),
-                const SizedBox(height: 10),
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 1,
-                  child: Row(children: [
-                    Expanded(
-                      child: KpiCard(
-                        label: 'Today',
-                        value: m.kpi.todayKwh,
-                        unit: 'kWh',
-                        icon: Icons.wb_sunny_outlined,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: KpiCard(
-                        label: 'This Month',
-                        value: m.kpi.monthKwh,
-                        unit: 'kWh',
-                        icon: Icons.calendar_month_outlined,
-                        iconColor: const Color(0xFF818CF8),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: KpiCard(
-                        label: 'Total',
-                        value: m.kpi.totalKwh >= 1000
-                            ? m.kpi.totalKwh / 1000
-                            : m.kpi.totalKwh,
-                        unit: m.kpi.totalKwh >= 1000 ? 'MWh' : 'kWh',
-                        icon: Icons.bolt_outlined,
-                        iconColor: AppColors.green,
-                        formatter: (v) => v.toStringAsFixed(2),
-                      ),
-                    ),
-                  ]),
-                ),
-                const SizedBox(height: 16),
-
-                // Intra-day power curve — always shown so the user can
-                // navigate back even when today has no generation yet.
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 2,
-                  child: PowerCurveCard(
-                    samples: _pacSamples,
-                    dateLabel: _pacDateLabel,
-                    isLoading: _isPacLoading,
-                    onPrevDay: _onPrevDay,
-                    onNextDay: _isPacToday ? null : _onNextDay,
-                    onPickDate: _onPickDate,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Annual energy bar chart
-                if (!_isLoading)
-                  _Staggered(
-                    ctrl: _staggerCtrl,
-                    index: 2,
-                    child: MonthlyEnergyBarChartCard(
-                      entries:     _monthlyEnergy,
-                      year:        _selectedYear,
-                      isLoading:   _isMonthlyLoading,
-                      onPrevYear:  _onPrevYear,
-                      onNextYear:  _isCurrentYear ? null : _onNextYear,
-                    ),
-                  ),
-                if (!_isLoading) const SizedBox(height: 16),
-
-                // Income KPIs
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 3,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      _SectionLabel(label: 'Earnings (${m.kpi.currency})'),
-                      const SizedBox(width: 8),
-                      if (_earningsRate != null) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: AppColors.accent.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                                color: AppColors.accent.withValues(alpha: 0.35)),
-                          ),
-                          child: Text(
-                            '₹${_earningsRate!.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '')}/kWh',
-                            style: const TextStyle(
-                              color: AppColors.accent,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      GestureDetector(
-                        onTap: _showEarningsDialog,
-                        child: Icon(
-                          _earningsRate != null
-                              ? Icons.edit_rounded
-                              : Icons.edit_outlined,
-                          color: _earningsRate != null
-                              ? AppColors.accent
-                              : AppColors.textSecondary,
-                          size: 15,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 3,
-                  child: Row(children: [
-                    Expanded(
-                      child: KpiCard(
-                        label: 'Today',
-                        value: _earningsRate != null
-                            ? m.kpi.todayKwh * _earningsRate!
-                            : m.kpi.todayIncome,
-                        unit: '₹ earned',
-                        icon: Icons.currency_rupee,
-                        iconColor: AppColors.green,
-                        formatter: (v) => '₹${v.toStringAsFixed(1)}',
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: KpiCard(
-                        label: 'Total',
-                        value: _earningsRate != null
-                            ? m.kpi.totalKwh * _earningsRate!
-                            : m.kpi.totalIncome,
-                        unit: '₹ lifetime',
-                        icon: Icons.account_balance_wallet_outlined,
-                        iconColor: AppColors.green,
-                        formatter: (v) => v >= 1000
-                            ? '₹${(v / 1000).toStringAsFixed(1)}k'
-                            : '₹${v.toStringAsFixed(0)}',
-                      ),
-                    ),
-                  ]),
-                ),
-                const SizedBox(height: 16),
-
-                // Monthly performance
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 4,
-                  child: MonthlyPerformanceCard(
-                    monthKwh: m.kpi.monthKwh,
-                    capacityKw: m.info.capacity,
-                    dayOfMonth: now.day,
-                    forecast: m.forecast,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Today's energy insights
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 5,
-                  child: TodayInsightsCard(todayKwh: m.kpi.todayKwh),
-                ),
-                const SizedBox(height: 16),
-
-                // CO2 & lifetime insights
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 6,
-                  child: Co2InsightsCard(
-                    co2Tonnes: m.environmental.co2Tonnes,
-                    totalKwh: m.kpi.totalKwh,
-                    totalIncome: m.kpi.totalIncome,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Environmental impact
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 7,
-                  child: EnvironmentalCard(data: m.environmental),
-                ),
-                const SizedBox(height: 16),
-
-                // Weather forecast
-                _Staggered(
-                  ctrl: _staggerCtrl,
-                  index: 8,
-                  child: WeatherSection(forecast: m.forecast),
-                ),
-                const SizedBox(height: 16),
-
-                // Inverter details
-                if (inverter != null)
-                  _Staggered(
-                    ctrl: _staggerCtrl,
-                    index: 9,
-                    child: InverterCard(
-                      inverter: inverter,
-                      onAlarmHistoryTap: _openAlarmHistory,
-                    ),
-                  ),
-                const SizedBox(height: 16),
-
                 // Timestamps footer
                 Center(
                   child: Column(
@@ -844,6 +671,202 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
         ],
       ),
+    );
+  }
+
+  Widget? _buildSectionWidget(
+    DashboardSection section,
+    StationMonitor m,
+    InverterData? inverter,
+    DateTime now,
+  ) {
+    switch (section) {
+      case DashboardSection.liveOutput:
+        return LivePowerCard(
+          pac: m.kpi.pac,
+          status: m.info.status,
+          workMode: inverter?.workMode ?? '',
+          capacityKw: m.info.capacity,
+        );
+      case DashboardSection.energyGeneration:
+        return _buildEnergyGenerationSection(m);
+      case DashboardSection.earnings:
+        return _buildEarningsSection(m);
+      case DashboardSection.monthlyPerformance:
+        return MonthlyPerformanceCard(
+          monthKwh: m.kpi.monthKwh,
+          capacityKw: m.info.capacity,
+          dayOfMonth: now.day,
+          forecast: m.forecast,
+        );
+      case DashboardSection.lifetimeImpact:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TodayInsightsCard(todayKwh: m.kpi.todayKwh),
+            const SizedBox(height: 16),
+            Co2InsightsCard(
+              co2Tonnes: m.environmental.co2Tonnes,
+              totalKwh: m.kpi.totalKwh,
+              totalIncome: m.kpi.totalIncome,
+            ),
+          ],
+        );
+      case DashboardSection.environmental:
+        return EnvironmentalCard(data: m.environmental);
+      case DashboardSection.forecast:
+        return WeatherSection(forecast: m.forecast);
+      case DashboardSection.inverterDetails:
+        return inverter != null
+            ? InverterCard(
+                inverter: inverter,
+                onAlarmHistoryTap: _openAlarmHistory,
+              )
+            : null;
+    }
+  }
+
+  Widget _buildEnergyGenerationSection(StationMonitor m) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _SectionLabel(label: 'Energy Generation'),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: KpiCard(
+              label: 'Today',
+              value: m.kpi.todayKwh,
+              unit: 'kWh',
+              icon: Icons.wb_sunny_outlined,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: KpiCard(
+              label: 'This Month',
+              value: m.kpi.monthKwh,
+              unit: 'kWh',
+              icon: Icons.calendar_month_outlined,
+              iconColor: const Color(0xFF818CF8),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: KpiCard(
+              label: 'Total',
+              value: m.kpi.totalKwh >= 1000
+                  ? m.kpi.totalKwh / 1000
+                  : m.kpi.totalKwh,
+              unit: m.kpi.totalKwh >= 1000 ? 'MWh' : 'kWh',
+              icon: Icons.bolt_outlined,
+              iconColor: AppColors.green,
+              formatter: (v) => v.toStringAsFixed(2),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 16),
+        // Intra-day power curve
+        PowerCurveCard(
+          samples: _pacSamples,
+          dateLabel: _pacDateLabel,
+          isLoading: _isPacLoading,
+          onPrevDay: _onPrevDay,
+          onNextDay: _isPacToday ? null : _onNextDay,
+          onPickDate: _onPickDate,
+        ),
+        if (!_isLoading) ...[
+          const SizedBox(height: 16),
+          // Annual energy bar chart
+          MonthlyEnergyBarChartCard(
+            entries:    _monthlyEnergy,
+            year:       _selectedYear,
+            isLoading:  _isMonthlyLoading,
+            onPrevYear: _onPrevYear,
+            onNextYear: _isCurrentYear ? null : _onNextYear,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildEarningsSection(StationMonitor m) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            _SectionLabel(label: 'Earnings (${m.kpi.currency})'),
+            const SizedBox(width: 8),
+            if (_earningsRate != null) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: AppColors.accent.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  '₹${_earningsRate!.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '')}/kWh',
+                  style: const TextStyle(
+                    color: AppColors.accent,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+            GestureDetector(
+              onTap: _showEarningsDialog,
+              child: Icon(
+                _earningsRate != null
+                    ? Icons.edit_rounded
+                    : Icons.edit_outlined,
+                color: _earningsRate != null
+                    ? AppColors.accent
+                    : AppColors.textSecondary,
+                size: 15,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: KpiCard(
+              label: 'Today',
+              value: _earningsRate != null
+                  ? m.kpi.todayKwh * _earningsRate!
+                  : m.kpi.todayIncome,
+              unit: '₹ earned',
+              icon: Icons.currency_rupee,
+              iconColor: AppColors.green,
+              formatter: (v) => '₹${v.toStringAsFixed(1)}',
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: KpiCard(
+              label: 'Total',
+              value: _earningsRate != null
+                  ? m.kpi.totalKwh * _earningsRate!
+                  : m.kpi.totalIncome,
+              unit: '₹ lifetime',
+              icon: Icons.account_balance_wallet_outlined,
+              iconColor: AppColors.green,
+              formatter: (v) => v >= 1000
+                  ? '₹${(v / 1000).toStringAsFixed(1)}k'
+                  : '₹${v.toStringAsFixed(0)}',
+            ),
+          ),
+        ]),
+      ],
     );
   }
 
@@ -879,6 +902,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         IconButton(
           icon: const Icon(Icons.refresh_rounded, color: AppColors.textSecondary, size: 22),
           onPressed: _isLoading ? null : _fetchData,
+        ),
+        IconButton(
+          icon: const Icon(Icons.tune_rounded, color: AppColors.textSecondary, size: 22),
+          tooltip: 'Customise layout',
+          onPressed: _openCustomize,
         ),
         IconButton(
           icon: const Icon(Icons.terminal_rounded, color: AppColors.textSecondary, size: 20),
@@ -1136,6 +1164,224 @@ class _EarningsRateDialogState extends State<_EarningsRateDialog> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── Dashboard customise-order sheet ──────────────────────────────────────────
+
+class _CustomizeOrderSheet extends StatefulWidget {
+  final List<DashboardSection> current;
+  const _CustomizeOrderSheet({required this.current});
+
+  @override
+  State<_CustomizeOrderSheet> createState() => _CustomizeOrderSheetState();
+}
+
+class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
+  late List<DashboardSection> _order;
+
+  @override
+  void initState() {
+    super.initState();
+    _order = List.from(widget.current);
+  }
+
+  static String _label(DashboardSection s) => switch (s) {
+        DashboardSection.liveOutput        => 'Live Output',
+        DashboardSection.energyGeneration  => 'Energy Generation',
+        DashboardSection.earnings          => 'Earnings',
+        DashboardSection.monthlyPerformance => 'Monthly Performance',
+        DashboardSection.lifetimeImpact    => 'Your Lifetime Impact',
+        DashboardSection.environmental     => 'Environmental Impact',
+        DashboardSection.forecast          => '7-Day Forecast',
+        DashboardSection.inverterDetails   => 'Inverter Details',
+      };
+
+  static String _subtitle(DashboardSection s) => switch (s) {
+        DashboardSection.liveOutput        => 'Current power output',
+        DashboardSection.energyGeneration  => 'KPIs · Power curve · Annual chart',
+        DashboardSection.earnings          => 'Today & lifetime income',
+        DashboardSection.monthlyPerformance => 'PR ratio & monthly outlook',
+        DashboardSection.lifetimeImpact    => 'Insights & CO₂ savings',
+        DashboardSection.environmental     => 'Trees, coal & CO₂ equivalents',
+        DashboardSection.forecast          => 'Next 7 days of weather',
+        DashboardSection.inverterDetails   => 'Technical inverter data',
+      };
+
+  static IconData _icon(DashboardSection s) => switch (s) {
+        DashboardSection.liveOutput        => Icons.bolt_rounded,
+        DashboardSection.energyGeneration  => Icons.show_chart_rounded,
+        DashboardSection.earnings          => Icons.currency_rupee,
+        DashboardSection.monthlyPerformance => Icons.bar_chart_rounded,
+        DashboardSection.lifetimeImpact    => Icons.auto_awesome_rounded,
+        DashboardSection.environmental     => Icons.eco_rounded,
+        DashboardSection.forecast          => Icons.wb_cloudy_outlined,
+        DashboardSection.inverterDetails   => Icons.memory_rounded,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle
+            Center(
+              child: Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 4),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 8, 4),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.tune_rounded,
+                        color: AppColors.accent, size: 16),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Customise Dashboard',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          'Drag to reorder sections',
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, _order),
+                    child: const Text(
+                      'Done',
+                      style: TextStyle(
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: AppColors.divider, height: 1),
+            // Reorderable list
+            Flexible(
+              child: ReorderableListView.builder(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                itemCount: _order.length,
+                proxyDecorator: (child, index, animation) {
+                  return AnimatedBuilder(
+                    animation: animation,
+                    builder: (_, innerChild) {
+                      final t = Curves.easeOut.transform(animation.value);
+                      return Transform.scale(
+                        scale: 1.0 + 0.02 * t,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: AppColors.card,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: AppColors.accent.withValues(alpha: 0.55 * t),
+                                width: 1.5,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.accent.withValues(alpha: 0.18 * t),
+                                  blurRadius: 18 * t,
+                                  spreadRadius: 1 * t,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: innerChild,
+                          ),
+                        ),
+                      );
+                    },
+                    child: child,
+                  );
+                },
+                onReorder: (oldIdx, newIdx) {
+                  setState(() {
+                    if (newIdx > oldIdx) newIdx--;
+                    final item = _order.removeAt(oldIdx);
+                    _order.insert(newIdx, item);
+                  });
+                },
+                itemBuilder: (ctx, idx) {
+                  final section = _order[idx];
+                  return ListTile(
+                    key: ValueKey(section),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardAlt,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(_icon(section),
+                          color: AppColors.textSecondary, size: 18),
+                    ),
+                    title: Text(
+                      _label(section),
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _subtitle(section),
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                    trailing: const Icon(Icons.drag_handle_rounded,
+                        color: AppColors.textSecondary, size: 22),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
