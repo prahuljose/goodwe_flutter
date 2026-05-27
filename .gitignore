@@ -46,3 +46,6 @@ app.*.map.json
 
 # Credentials / scratch files — never commit
 test_pac_api.dart
+test_tapo.dart
+test_tapo_local.dart
+test_tapo_aes_ssl.dart

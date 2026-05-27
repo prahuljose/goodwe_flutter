@@ -15,6 +15,9 @@ import 'widgets/insights_card.dart';
 import 'widgets/api_log_sheet.dart';
 import 'widgets/power_chart.dart';
 import 'widgets/monthly_bar_chart.dart';
+import 'widgets/energy_balance_card.dart';
+import '../consumption/consumption_provider.dart';
+import '../consumption/tapo_devices_screen.dart';
 import '../../data/remote/api_logger.dart';
 import '../../data/models/demo_data.dart';
 import '../../data/models/monthly_energy.dart';
@@ -24,6 +27,7 @@ import '../../data/local/credentials_storage.dart';
 
 enum DashboardSection {
   liveOutput,
+  energyBalance,     // Production vs consumption (Tapo P110)
   energyGeneration,
   earnings,
   monthlyPerformance,
@@ -188,6 +192,13 @@ class _DashboardScreenState extends State<DashboardScreen>
           _lastRefreshed   = now;
         });
         _staggerCtrl.forward();
+
+        // Refresh home-consumption (Tapo P110) with the latest solar figures
+        // so the Energy Balance card can compare both sides.
+        context.read<ConsumptionProvider>().refresh(
+              liveProductionW: monitor.kpi.pac,
+              productionKwh: monitor.kpi.todayKwh,
+            );
       }
     } on SemsAuthError {
       // Retry also failed with auth error (password changed, account
@@ -706,6 +717,8 @@ class _DashboardScreenState extends State<DashboardScreen>
           workMode: inverter?.workMode ?? '',
           capacityKw: m.info.capacity,
         );
+      case DashboardSection.energyBalance:
+        return const EnergyBalanceCard();
       case DashboardSection.energyGeneration:
         return _buildEnergyGenerationSection(m);
       case DashboardSection.earnings:
@@ -910,6 +923,14 @@ class _DashboardScreenState extends State<DashboardScreen>
         IconButton(
           icon: const Icon(Icons.refresh_rounded, color: AppColors.textSecondary, size: 22),
           onPressed: _isLoading ? null : _fetchData,
+        ),
+        IconButton(
+          icon: const Icon(Icons.electrical_services_rounded,
+              color: AppColors.textSecondary, size: 21),
+          tooltip: 'Tapo plugs',
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const TapoDevicesScreen()),
+          ),
         ),
         IconButton(
           icon: const Icon(Icons.tune_rounded, color: AppColors.textSecondary, size: 22),
@@ -1204,6 +1225,7 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
 
   static String _label(DashboardSection s) => switch (s) {
         DashboardSection.liveOutput         => 'Live Output',
+        DashboardSection.energyBalance      => 'Energy Balance',
         DashboardSection.energyGeneration   => 'Energy Generation',
         DashboardSection.earnings           => 'Earnings',
         DashboardSection.monthlyPerformance => 'Monthly Performance',
@@ -1216,6 +1238,7 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
 
   static String _subtitle(DashboardSection s) => switch (s) {
         DashboardSection.liveOutput         => 'Current power output',
+        DashboardSection.energyBalance      => 'Solar vs home consumption (Tapo P110)',
         DashboardSection.energyGeneration   => 'KPIs · Power curve · Annual chart',
         DashboardSection.earnings           => 'Today & lifetime income',
         DashboardSection.monthlyPerformance => 'PR ratio & monthly outlook',
@@ -1228,6 +1251,7 @@ class _CustomizeOrderSheetState extends State<_CustomizeOrderSheet> {
 
   static IconData _icon(DashboardSection s) => switch (s) {
         DashboardSection.liveOutput         => Icons.bolt_rounded,
+        DashboardSection.energyBalance      => Icons.swap_vert_rounded,
         DashboardSection.energyGeneration   => Icons.show_chart_rounded,
         DashboardSection.earnings           => Icons.currency_rupee,
         DashboardSection.monthlyPerformance => Icons.bar_chart_rounded,
