@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../../data/models/energy_balance.dart';
 import '../../data/models/tapo_reading.dart';
@@ -13,9 +12,8 @@ class ConsumptionProvider extends ChangeNotifier {
   EnergyBalance? _balance;
   List<TapoReading> _readings = [];
   String? _errorMessage;
-  Timer? _pollTimer;
 
-  // Last known solar figures (so polling can rebuild the balance)
+  // Last known solar figures (so a reload can rebuild the balance)
   double _lastProductionW = 0;
   double _lastProductionKwh = 0;
 
@@ -33,6 +31,8 @@ class ConsumptionProvider extends ChangeNotifier {
   TapoLocalRepository get repo => _repo;
 
   /// Refresh consumption and rebuild the energy balance against the supplied
+  bool _refreshing = false;
+
   /// solar figures. Call after each GoodWe fetch.
   Future<void> refresh({
     required double liveProductionW,
@@ -40,6 +40,11 @@ class ConsumptionProvider extends ChangeNotifier {
   }) async {
     _lastProductionW = liveProductionW;
     _lastProductionKwh = productionKwh;
+
+    // Prevent overlapping refreshes (e.g. a poll firing during a pull-to-
+    // refresh) — concurrent reads on the same plug socket would corrupt the
+    // KLAP sequence/connection.
+    if (_refreshing) return;
 
     if (!await _repo.hasAccount()) {
       _set(ConsumptionStatus.noAccount);
@@ -55,6 +60,7 @@ class ConsumptionProvider extends ChangeNotifier {
       _set(ConsumptionStatus.loading);
     }
 
+    _refreshing = true;
     try {
       final readings = await _repo.readAll();
       _readings = readings;
@@ -85,33 +91,20 @@ class ConsumptionProvider extends ChangeNotifier {
     } catch (e) {
       _errorMessage = e.toString();
       _set(ConsumptionStatus.error);
+    } finally {
+      _refreshing = false;
     }
   }
 
   /// Re-evaluate after the device list / account changes (e.g. from setup).
+  /// Live polling is driven by the dashboard (one timer for solar + plugs).
   Future<void> reload() => refresh(
         liveProductionW: _lastProductionW,
         productionKwh: _lastProductionKwh,
       );
 
-  void startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) => reload());
-  }
-
-  void stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
-  }
-
   void _set(ConsumptionStatus s) {
     _status = s;
     notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    stopPolling();
-    super.dispose();
   }
 }

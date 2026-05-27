@@ -12,7 +12,13 @@ class TapoStorage {
   final FlutterSecureStorage _s;
 
   TapoStorage({FlutterSecureStorage? storage})
-      : _s = storage ?? const FlutterSecureStorage();
+      : _s = storage ??
+            const FlutterSecureStorage(
+              // Hardware-backed EncryptedSharedPreferences on Android —
+              // required for data to survive hot restart / app restart.
+              // (Matches CredentialsStorage; the plain backend loses data.)
+              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+            );
 
   // ── Account ─────────────────────────────────────────────────────────────
 

@@ -15,6 +15,136 @@ void _openDevices(BuildContext context) {
   );
 }
 
+/// Bottom sheet listing every plug with its online state + today's usage.
+void _showDeviceStatus(BuildContext context, List<TapoReading> readings) {
+  final online = readings.where((r) => r.online).length;
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: AppColors.card,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (_) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Plug Status',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold)),
+              Text('$online of ${readings.length} online',
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...readings.map((r) => _StatusRow(reading: r)),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _openDevices(context);
+              },
+              icon: const Icon(Icons.settings_rounded,
+                  size: 16, color: _consumptionColor),
+              label: const Text('Manage plugs',
+                  style: TextStyle(color: _consumptionColor)),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _StatusRow extends StatelessWidget {
+  final TapoReading reading;
+  const _StatusRow({required this.reading});
+
+  @override
+  Widget build(BuildContext context) {
+    final online = reading.online;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.cardAlt,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: online ? AppColors.green : AppColors.textSecondary,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(reading.device.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text('${reading.device.model} · ${reading.device.ip}',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11)),
+              ],
+            ),
+          ),
+          if (online)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text('${reading.liveW.toStringAsFixed(0)} W',
+                    style: const TextStyle(
+                        color: _consumptionColor,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
+                Text('${reading.todayKwh.toStringAsFixed(2)} kWh today',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11)),
+              ],
+            )
+          else
+            const Text('Offline',
+                style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500)),
+        ],
+      ),
+    );
+  }
+}
+
 class EnergyBalanceCard extends StatelessWidget {
   const EnergyBalanceCard({super.key});
 
@@ -233,18 +363,23 @@ class _Balance extends StatelessWidget {
       children: [
         _Header(
           trailing: GestureDetector(
-            onTap: () => _openDevices(context),
+            onTap: () => _showDeviceStatus(context, readings),
+            behavior: HitTestBehavior.opaque,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
                   width: 6,
                   height: 6,
-                  decoration: const BoxDecoration(
-                      color: AppColors.green, shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                      color: readings.any((r) => r.online)
+                          ? AppColors.green
+                          : AppColors.textSecondary,
+                      shape: BoxShape.circle),
                 ),
                 const SizedBox(width: 6),
-                Text('${readings.where((r) => r.online).length} live',
+                Text(
+                    '${readings.where((r) => r.online).length}/${readings.length} live',
                     style: const TextStyle(
                         color: AppColors.textSecondary, fontSize: 11)),
                 const SizedBox(width: 4),

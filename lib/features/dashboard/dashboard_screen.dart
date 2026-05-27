@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/exceptions.dart';
@@ -46,7 +47,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   StationMonitor? _monitor;
   String    _stationId     = CredentialsStorage.defaultStationId;
   DateTime? _lastRefreshed;
@@ -68,6 +69,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   SemsError? _error;
   double? _earningsRate;
 
+  // Live polling — refreshes solar + plug data every 15s (foreground only)
+  Timer? _pollTimer;
+  static const _pollInterval = Duration(seconds: 15);
+
   late final AnimationController _staggerCtrl;
 
   @override
@@ -83,10 +88,116 @@ class _DashboardScreenState extends State<DashboardScreen>
     _loadEarningsRate();
     _loadSectionOrder();
     _loadHiddenSections();
+
+    // Live polling (solar + plugs), paused when the app isn't in the foreground.
+    WidgetsBinding.instance.addObserver(this);
+    _startPolling();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPolling();
+    } else {
+      // paused / inactive / hidden / detached — stop hitting the network
+      _stopPolling();
+    }
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _silentRefresh());
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  /// Refresh live data in place — no loading spinner, no animation replay, and
+  /// without disturbing the user's selected power-curve day / year. Solar
+  /// failures are swallowed (existing data stays); the plug balance is always
+  /// refreshed with the best-available solar figures.
+  Future<void> _silentRefresh() async {
+    final auth = context.read<AuthRepository>();
+    final stationRepo = context.read<StationRepository>();
+
+    var prodW = _monitor?.kpi.pac ?? 0;
+    var prodKwh = _monitor?.kpi.todayKwh ?? 0;
+
+    try {
+      if (!auth.isDemoMode) {
+        if (auth.currentSession == null) {
+          final ok = await auth.tryRelogin();
+          if (!ok || !mounted) return;
+        }
+        StationMonitor monitor;
+        try {
+          monitor =
+              await stationRepo.fetchMonitor(auth.currentSession!, _stationId);
+        } on SemsAuthError {
+          await auth.invalidateSession();
+          final ok = await auth.tryRelogin();
+          if (!ok || !mounted) return;
+          monitor =
+              await stationRepo.fetchMonitor(auth.currentSession!, _stationId);
+        }
+
+        final now = DateTime.now();
+        // Refresh today's power curve only if the user is viewing today
+        List<PacSample>? pac;
+        if (_isSameDay(_selectedPacDate, now)) {
+          try {
+            pac = await stationRepo.fetchPacByDay(
+                auth.currentSession!, _stationId, now);
+          } catch (_) {}
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _monitor = monitor;
+          _lastRefreshed = now;
+          if (pac != null) _pacSamples = pac;
+        });
+        prodW = monitor.kpi.pac;
+        prodKwh = _effectiveTodayKwh(monitor);
+      }
+    } catch (_) {
+      // Silent — keep showing existing data on any solar failure
+    }
+
+    // Always refresh the plug balance with the best-available solar figures,
+    // so local consumption keeps updating even if the GoodWe API is flaky.
+    if (mounted) {
+      context.read<ConsumptionProvider>().refresh(
+            liveProductionW: prodW,
+            productionKwh: prodKwh,
+          );
+    }
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  /// Overnight, the inverter is asleep and GoodWe keeps returning yesterday's
+  /// "today" total. If the inverter's last report was on an earlier calendar
+  /// day, today's figures are stale — treat production as 0 until it wakes.
+  bool _isSolarStale(StationMonitor m) {
+    final t = m.primaryInverter?.lastReportTime;
+    if (t == null) return false; // can't tell → trust the value
+    final now = DateTime.now();
+    return DateTime(t.year, t.month, t.day)
+        .isBefore(DateTime(now.year, now.month, now.day));
+  }
+
+  /// Today's solar generation, corrected for the overnight stale-day case.
+  double _effectiveTodayKwh(StationMonitor m) =>
+      _isSolarStale(m) ? 0.0 : m.kpi.todayKwh;
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopPolling();
     _staggerCtrl.dispose();
     super.dispose();
   }
@@ -197,7 +308,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         // so the Energy Balance card can compare both sides.
         context.read<ConsumptionProvider>().refresh(
               liveProductionW: monitor.kpi.pac,
-              productionKwh: monitor.kpi.todayKwh,
+              productionKwh: _effectiveTodayKwh(monitor),
             );
       }
     } on SemsAuthError {
@@ -731,7 +842,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           forecast: m.forecast,
         );
       case DashboardSection.todayImpact:
-        return TodayInsightsCard(todayKwh: m.kpi.todayKwh);
+        return TodayInsightsCard(todayKwh: _effectiveTodayKwh(m));
       case DashboardSection.lifetimeImpact:
         return Co2InsightsCard(
           co2Tonnes: m.environmental.co2Tonnes,
@@ -758,7 +869,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           Expanded(
             child: KpiCard(
               label: 'Today',
-              value: m.kpi.todayKwh,
+              value: _effectiveTodayKwh(m),
               unit: 'kWh',
               icon: Icons.wb_sunny_outlined,
             ),

@@ -79,6 +79,70 @@ class TapoLocalRepository {
     }
   }
 
+  /// Scan the local network for Tapo plugs.
+  ///
+  /// Scans every candidate /24 subnet — derived from all of the phone's
+  /// private network interfaces AND the subnets of any already-added plugs
+  /// (known-good). Returns the plugs that aren't already configured, plus a
+  /// count of detected-but-already-added plugs (so the UI can explain an empty
+  /// result). [onProgress] fires as hosts are scanned (scanned, total).
+  Future<({List<TapoDevice> found, int alreadyAdded})> discover({
+    void Function(int scanned, int total)? onProgress,
+  }) async {
+    if (_email == null || _password == null) {
+      throw TapoLocalException('Set your Tapo account first.');
+    }
+    final subnets =
+        await _candidateSubnets(knownIps: _devices.map((d) => d.ip));
+    if (subnets.isEmpty) {
+      throw TapoLocalException(
+          'Could not determine your Wi-Fi network. Are you connected?');
+    }
+
+    // Phase 1 — fast detection across all candidate subnets.
+    const batch = 20; // gentle on mobile sockets
+    const probeTimeout = Duration(milliseconds: 1200);
+    final total = subnets.length * 254;
+    final hits = <String>[];
+    var scanned = 0;
+
+    for (final subnet in subnets) {
+      for (var start = 1; start <= 254; start += batch) {
+        final end = (start + batch - 1).clamp(1, 254);
+        await Future.wait([
+          for (var i = start; i <= end; i++)
+            _looksLikeTapo('$subnet.$i', probeTimeout).then((isTapo) {
+              if (isTapo) hits.add('$subnet.$i');
+              onProgress?.call(++scanned, total);
+            }),
+        ]);
+      }
+    }
+
+    // Phase 2 — identify each hit (handshake + get_device_info).
+    final existingIds = _devices.map((d) => d.id).toSet();
+    final existingIps = _devices.map((d) => d.ip).toSet();
+    final found = <TapoDevice>[];
+    var alreadyAdded = 0;
+    for (final ip in hits) {
+      if (existingIps.contains(ip)) {
+        alreadyAdded++;
+        continue;
+      }
+      try {
+        final device = await probe(ip);
+        if (existingIds.contains(device.id)) {
+          alreadyAdded++;
+        } else {
+          found.add(device);
+        }
+      } catch (_) {
+        // Credentials mismatch or transient error — skip silently
+      }
+    }
+    return (found: found, alreadyAdded: alreadyAdded);
+  }
+
   Future<void> addDevice(TapoDevice device) async {
     // Replace if a device with the same id already exists (e.g. IP changed)
     _devices = [
@@ -105,27 +169,37 @@ class TapoLocalRepository {
   // ── Readings ──────────────────────────────────────────────────────────────
 
   /// Read one device. Never throws — returns an offline reading on failure.
+  ///
+  /// The P110 closes idle keep-alive sockets after a few seconds, so a cached
+  /// session can be stale. We attempt with the cached session; on any failure
+  /// we drop it, re-handshake, and retry once. This makes a dead socket
+  /// self-heal within a single read instead of surfacing a transient error.
   Future<TapoReading> read(TapoDevice device) async {
-    try {
-      final session = await _ensureSession(device);
-      final data = await session.request('get_energy_usage', null);
-      return TapoReading(
-        device: device,
-        liveW: ((data['current_power'] as num?)?.toDouble() ?? 0) / 1000.0,
-        todayKwh: ((data['today_energy'] as num?)?.toDouble() ?? 0) / 1000.0,
-        monthKwh: ((data['month_energy'] as num?)?.toDouble() ?? 0) / 1000.0,
-        online: true,
-      );
-    } on TapoLocalException catch (e) {
-      // Drop the session so the next attempt re-handshakes
-      _sessions.remove(device.id)?.close();
-      _sessionTimes.remove(device.id);
-      return TapoReading.offline(device, e.message);
-    } catch (e) {
-      _sessions.remove(device.id)?.close();
-      _sessionTimes.remove(device.id);
-      return TapoReading.offline(device, e.toString());
+    for (var attempt = 0; attempt < 2; attempt++) {
+      // On the retry, force a fresh handshake
+      final forceNew = attempt == 1;
+      try {
+        final session = await _ensureSession(device, forceNew: forceNew);
+        final data = await session.request('get_energy_usage', null);
+        return TapoReading(
+          device: device,
+          liveW: ((data['current_power'] as num?)?.toDouble() ?? 0) / 1000.0,
+          todayKwh: ((data['today_energy'] as num?)?.toDouble() ?? 0) / 1000.0,
+          monthKwh: ((data['month_energy'] as num?)?.toDouble() ?? 0) / 1000.0,
+          online: true,
+        );
+      } catch (e) {
+        // Drop the (possibly stale) session before retrying / giving up
+        _sessions.remove(device.id)?.close();
+        _sessionTimes.remove(device.id);
+        if (attempt == 1) {
+          final msg = e is TapoLocalException ? e.message : e.toString();
+          return TapoReading.offline(device, msg);
+        }
+        // else: loop again with a fresh handshake
+      }
     }
+    return TapoReading.offline(device, 'Unreachable.');
   }
 
   /// Read all configured devices concurrently.
@@ -136,10 +210,13 @@ class TapoLocalRepository {
 
   // ── Session management ──────────────────────────────────────────────────
 
-  Future<_KlapSession> _ensureSession(TapoDevice device) async {
+  Future<_KlapSession> _ensureSession(TapoDevice device,
+      {bool forceNew = false}) async {
     final existing = _sessions[device.id];
     final ts = _sessionTimes[device.id];
-    final fresh = existing != null &&
+    final fresh = !forceNew &&
+        existing != null &&
+        existing.isAlive &&
         ts != null &&
         DateTime.now().difference(ts) < _sessionTtl;
     if (fresh) return existing;
@@ -182,6 +259,9 @@ class _KlapSession {
   _TapoConnection? _conn;
 
   _KlapSession({required this.ip, required this.email, required this.password});
+
+  /// True while the underlying socket is still open.
+  bool get isAlive => _conn?.isAlive ?? false;
 
   Future<void> handshake() async {
     final authHash = Uint8List.fromList(crypto.sha256.convert([
@@ -280,13 +360,32 @@ class _TapoConnection {
   int _headerEnd = -1;
   int _contentLength = -1;
   String? cookie;
+  bool _closed = false;
 
   _TapoConnection(this.ip);
 
+  /// False once the device (or network) has closed the socket.
+  bool get isAlive => !_closed;
+
   Future<void> connect() async {
     _socket = await Socket.connect(ip, 80, timeout: const Duration(seconds: 5));
-    _socket.listen(_onData,
-        onError: (e) => _pending?.completeError(e), cancelOnError: false);
+    _socket.listen(
+      _onData,
+      onError: (e) {
+        _closed = true;
+        _pending?.completeError(e);
+      },
+      onDone: () {
+        // Device closed the keep-alive connection — mark dead so the next
+        // request fast-fails and triggers a fresh handshake.
+        _closed = true;
+        final p = _pending;
+        if (p != null && !p.isCompleted) {
+          p.completeError(const TapoLocalException('Connection closed.'));
+        }
+      },
+      cancelOnError: false,
+    );
   }
 
   void _onData(List<int> chunk) {
@@ -332,7 +431,16 @@ class _TapoConnection {
   }
 
   Future<(int, Uint8List, String?)> post(String path, Uint8List body) async {
+    // Fast-fail if the socket is already dead — avoids an 8s timeout wait on a
+    // stale keep-alive connection. The caller re-handshakes on failure.
+    if (_closed) {
+      throw const TapoLocalException('Connection closed (stale session).');
+    }
+
     _pending = Completer<(int, Uint8List, String?)>();
+    _headerEnd = -1;
+    _contentLength = -1;
+
     final headerLines = [
       'POST $path HTTP/1.1',
       'Host: $ip',
@@ -342,18 +450,112 @@ class _TapoConnection {
       'Connection: keep-alive',
       if (cookie != null) 'Cookie: $cookie',
     ];
-    _socket.add(utf8.encode('${headerLines.join('\r\n')}\r\n\r\n'));
-    _socket.add(body);
-    await _socket.flush();
+    try {
+      _socket.add(utf8.encode('${headerLines.join('\r\n')}\r\n\r\n'));
+      _socket.add(body);
+      await _socket.flush();
+    } catch (e) {
+      _closed = true;
+      throw const TapoLocalException('Socket write failed (stale session).');
+    }
 
-    return _pending!.future.timeout(const Duration(seconds: 8),
-        onTimeout: () => (0, Uint8List(0), null));
+    return _pending!.future.timeout(const Duration(seconds: 6),
+        onTimeout: () {
+      _closed = true; // treat a hung request as a dead connection
+      return (0, Uint8List(0), null);
+    });
   }
 
   void close() {
     try {
       _socket.destroy();
     } catch (_) {}
+  }
+}
+
+/// Collect every candidate /24 subnet base (e.g. "192.168.0") to scan —
+/// from all private network interfaces plus the subnets of already-added
+/// plugs (known-good, in case interface enumeration misses the Wi-Fi one).
+Future<Set<String>> _candidateSubnets({Iterable<String> knownIps = const []}) async {
+  final subnets = <String>{};
+  for (final ip in knownIps) {
+    final p = ip.split('.');
+    if (p.length == 4) subnets.add('${p[0]}.${p[1]}.${p[2]}');
+  }
+  final interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4, includeLinkLocal: false);
+  for (final iface in interfaces) {
+    for (final addr in iface.addresses) {
+      if (_isPrivateIp(addr.address)) {
+        final p = addr.address.split('.');
+        subnets.add('${p[0]}.${p[1]}.${p[2]}');
+      }
+    }
+  }
+  return subnets;
+}
+
+bool _isPrivateIp(String ip) {
+  return ip.startsWith('192.168.') ||
+      ip.startsWith('10.') ||
+      RegExp(r'^172\.(1[6-9]|2[0-9]|3[01])\.').hasMatch(ip);
+}
+
+/// Lightweight one-shot probe: does [ip] answer the KLAP handshake1 with the
+/// tell-tale HTTP 200 + 48-byte body? Never throws — returns false on anything.
+Future<bool> _looksLikeTapo(String ip, Duration timeout) async {
+  Socket? socket;
+  try {
+    socket = await Socket.connect(ip, 80, timeout: timeout);
+    final seed = _randomBytes(16);
+    final head = 'POST /app/handshake1 HTTP/1.1\r\n'
+        'Host: $ip\r\n'
+        'Accept: */*\r\n'
+        'Content-Type: application/octet-stream\r\n'
+        'Content-Length: 16\r\n\r\n';
+    socket.add(utf8.encode(head));
+    socket.add(seed);
+    await socket.flush();
+
+    final completer = Completer<bool>();
+    final buf = BytesBuilder();
+    late StreamSubscription sub;
+    sub = socket.listen(
+      (chunk) {
+        buf.add(chunk);
+        final raw = buf.toBytes();
+        final he = _findHeaderEnd(raw);
+        if (he >= raw.length) return; // headers incomplete
+        final headerText = latin1.decode(raw.sublist(0, he));
+        final status =
+            int.tryParse(headerText.split('\r\n').first.split(' ')[1]) ?? 0;
+        var cl = -1;
+        for (final line in headerText.split('\r\n')) {
+          if (line.toLowerCase().startsWith('content-length:')) {
+            cl = int.tryParse(line.split(':')[1].trim()) ?? -1;
+          }
+        }
+        if (!completer.isCompleted) {
+          completer.complete(status == 200 && cl == 48);
+        }
+      },
+      onError: (_) {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+      cancelOnError: false,
+    );
+
+    final result =
+        await completer.future.timeout(timeout, onTimeout: () => false);
+    await sub.cancel();
+    return result;
+  } catch (_) {
+    return false;
+  } finally {
+    socket?.destroy();
   }
 }
 

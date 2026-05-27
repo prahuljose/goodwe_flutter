@@ -189,17 +189,22 @@ class _DeviceListState extends State<_DeviceList> {
   }
 
   Future<void> _addFlow() async {
-    final added = await showModalBottomSheet<bool>(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _AddDeviceSheet(repo: widget.repo),
+      builder: (_) => _AddDeviceSheet(
+        repo: widget.repo,
+        // Fires after each successful add so the list + dashboard update live,
+        // even if the user adds several plugs before dismissing.
+        onAdded: () {
+          if (!mounted) return;
+          setState(() {});
+          widget.onChanged();
+          context.read<ConsumptionProvider>().reload();
+        },
+      ),
     );
-    if (added == true && mounted) {
-      setState(() {});
-      widget.onChanged();
-      context.read<ConsumptionProvider>().reload();
-    }
   }
 
   Future<void> _rename(TapoDevice d) async {
@@ -363,18 +368,29 @@ class _EmptyDevices extends StatelessWidget {
 
 class _AddDeviceSheet extends StatefulWidget {
   final TapoLocalRepository repo;
-  const _AddDeviceSheet({required this.repo});
+  final VoidCallback onAdded;
+  const _AddDeviceSheet({required this.repo, required this.onAdded});
 
   @override
   State<_AddDeviceSheet> createState() => _AddDeviceSheetState();
 }
 
 class _AddDeviceSheetState extends State<_AddDeviceSheet> {
+  // Scan state
+  bool _scanning = false;
+  int _scanned = 0;
+  int _scanTotal = 254;
+  List<TapoDevice>? _discovered; // null = not scanned yet
+  int _alreadyAdded = 0;
+  final Set<String> _addedIds = {};
+  String? _scanError;
+
+  // Manual state
   final _ipCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   bool _probing = false;
   bool _saving = false;
-  String? _error;
+  String? _manualError;
   TapoDevice? _found;
 
   @override
@@ -384,140 +400,425 @@ class _AddDeviceSheetState extends State<_AddDeviceSheet> {
     super.dispose();
   }
 
+  // ── Scan ──────────────────────────────────────────────────────────────────
+
+  Future<void> _scan() async {
+    setState(() {
+      _scanning = true;
+      _scanError = null;
+      _discovered = null;
+      _scanned = 0;
+    });
+    try {
+      final result = await widget.repo.discover(
+        onProgress: (scanned, total) {
+          if (mounted) {
+            setState(() {
+              _scanned = scanned;
+              _scanTotal = total;
+            });
+          }
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _discovered = result.found;
+          _alreadyAdded = result.alreadyAdded;
+          _scanning = false;
+        });
+      }
+    } on TapoLocalException catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanError = e.message;
+          _scanning = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanError = e.toString();
+          _scanning = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _addDiscovered(TapoDevice device) async {
+    await widget.repo.addDevice(device);
+    widget.onAdded();
+    if (mounted) setState(() => _addedIds.add(device.id));
+  }
+
+  // ── Manual ────────────────────────────────────────────────────────────────
+
   Future<void> _probe() async {
     final ip = _ipCtrl.text.trim();
     if (!RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(ip)) {
-      setState(() => _error = 'Enter a valid IPv4 address');
+      setState(() => _manualError = 'Enter a valid IPv4 address');
       return;
     }
     setState(() {
       _probing = true;
-      _error = null;
+      _manualError = null;
       _found = null;
     });
     try {
       final device = await widget.repo.probe(ip);
       setState(() {
         _found = device;
-        _nameCtrl.text = device.name; // pre-fill auto name (editable)
+        _nameCtrl.text = device.name;
         _probing = false;
       });
     } on TapoLocalException catch (e) {
       setState(() {
-        _error = e.message;
+        _manualError = e.message;
         _probing = false;
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _manualError = e.toString();
         _probing = false;
       });
     }
   }
 
-  Future<void> _save() async {
+  Future<void> _saveManual() async {
     final found = _found;
     if (found == null) return;
     setState(() => _saving = true);
-    final name = _nameCtrl.text.trim().isEmpty ? found.name : _nameCtrl.text.trim();
+    final name =
+        _nameCtrl.text.trim().isEmpty ? found.name : _nameCtrl.text.trim();
     await widget.repo.addDevice(found.copyWith(name: name));
-    if (mounted) Navigator.pop(context, true);
+    widget.onAdded();
+    if (mounted) Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: const BoxDecoration(
           color: AppColors.card,
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.divider,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text('Add a plug',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            _label('Plug IP Address'),
-            const SizedBox(height: 8),
-            _field(
-              controller: _ipCtrl,
-              hint: '192.168.0.100',
-              keyboardType: TextInputType.number,
-              enabled: _found == null,
-            ),
-            const SizedBox(height: 6),
-            const Text('Tapo app → plug → ⚙ → Device Info → IP Address',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 11)),
-
-            if (_error != null) ...[
-              const SizedBox(height: 14),
-              _ErrorBox(_error!),
-            ],
-
-            // After probe: show fetched identity + editable name
-            if (_found != null) ...[
-              const SizedBox(height: 18),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.green.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(10),
-                  border:
-                      Border.all(color: AppColors.green.withValues(alpha: 0.25)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle_outline_rounded,
-                        color: AppColors.green, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('Found ${_found!.model} — “${_found!.name}”',
-                          style: const TextStyle(
-                              color: AppColors.green, fontSize: 12)),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              _label('Name'),
-              const SizedBox(height: 8),
-              _field(controller: _nameCtrl, hint: 'Plug name'),
-            ],
-
-            const SizedBox(height: 24),
-            _found == null
-                ? _PrimaryButton(
-                    label: 'Find plug',
-                    loading: _probing,
-                    onPressed: _probe,
-                  )
-                : _PrimaryButton(
-                    label: 'Add plug',
-                    loading: _saving,
-                    onPressed: _save,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.divider,
+                    borderRadius: BorderRadius.circular(2),
                   ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('Add a plug',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+
+              // ── Scan section ──
+              _ScanSection(
+                scanning: _scanning,
+                scanned: _scanned,
+                total: _scanTotal,
+                discovered: _discovered,
+                alreadyAdded: _alreadyAdded,
+                addedIds: _addedIds,
+                error: _scanError,
+                onScan: _scan,
+                onAdd: _addDiscovered,
+              ),
+
+              const SizedBox(height: 22),
+              Row(children: const [
+                Expanded(child: Divider(color: AppColors.divider)),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('or enter manually',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 11)),
+                ),
+                Expanded(child: Divider(color: AppColors.divider)),
+              ]),
+              const SizedBox(height: 18),
+
+              // ── Manual section ──
+              _label('Plug IP Address'),
+              const SizedBox(height: 8),
+              _field(
+                controller: _ipCtrl,
+                hint: '192.168.0.100',
+                keyboardType: TextInputType.number,
+                enabled: _found == null,
+              ),
+              const SizedBox(height: 6),
+              const Text('Tapo app → plug → ⚙ → Device Info → IP Address',
+                  style:
+                      TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+
+              if (_manualError != null) ...[
+                const SizedBox(height: 14),
+                _ErrorBox(_manualError!),
+              ],
+
+              if (_found != null) ...[
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.green.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: AppColors.green.withValues(alpha: 0.25)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.check_circle_outline_rounded,
+                          color: AppColors.green, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text('Found ${_found!.model} — “${_found!.name}”',
+                            style: const TextStyle(
+                                color: AppColors.green, fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _label('Name'),
+                const SizedBox(height: 8),
+                _field(controller: _nameCtrl, hint: 'Plug name'),
+              ],
+
+              const SizedBox(height: 20),
+              _found == null
+                  ? _PrimaryButton(
+                      label: 'Find plug',
+                      loading: _probing,
+                      onPressed: _probe,
+                    )
+                  : _PrimaryButton(
+                      label: 'Add plug',
+                      loading: _saving,
+                      onPressed: _saveManual,
+                    ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Scan section ─────────────────────────────────────────────────────────────
+
+class _ScanSection extends StatelessWidget {
+  final bool scanning;
+  final int scanned;
+  final int total;
+  final List<TapoDevice>? discovered;
+  final int alreadyAdded;
+  final Set<String> addedIds;
+  final String? error;
+  final VoidCallback onScan;
+  final Future<void> Function(TapoDevice) onAdd;
+
+  const _ScanSection({
+    required this.scanning,
+    required this.scanned,
+    required this.total,
+    required this.discovered,
+    required this.alreadyAdded,
+    required this.addedIds,
+    required this.error,
+    required this.onScan,
+    required this.onAdd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (scanning) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.cardAlt,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: _consumptionColor),
+                ),
+                const SizedBox(width: 12),
+                Text('Scanning your network…  $scanned/$total',
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: total == 0 ? null : scanned / total,
+                minHeight: 4,
+                backgroundColor: AppColors.divider,
+                valueColor:
+                    const AlwaysStoppedAnimation(_consumptionColor),
+              ),
+            ),
           ],
         ),
+      );
+    }
+
+    if (error != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ErrorBox(error!),
+          const SizedBox(height: 12),
+          _ScanButton(onScan: onScan, label: 'Try again'),
+        ],
+      );
+    }
+
+    if (discovered == null) {
+      // Not scanned yet
+      return _ScanButton(onScan: onScan, label: 'Scan my network');
+    }
+
+    // Scanned — show results
+    final remaining =
+        discovered!.where((d) => !addedIds.contains(d.id)).toList();
+    if (discovered!.isEmpty) {
+      final msg = alreadyAdded > 0
+          ? 'Found $alreadyAdded plug(s), but they\'re already added. '
+              'Nothing new to add.'
+          : 'No plugs found. Make sure they\'re powered on, on this Wi-Fi, '
+              'and have Third-Party Compatibility enabled in the Tapo app.';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.cardAlt,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              msg,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12, height: 1.45),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _ScanButton(onScan: onScan, label: 'Scan again'),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8, left: 2),
+          child: Text('Found ${discovered!.length} plug(s)',
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
+        ),
+        ...discovered!.map((d) {
+          final added = addedIds.contains(d.id);
+          return Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+            decoration: BoxDecoration(
+              color: AppColors.cardAlt,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.power_rounded,
+                    color: _consumptionColor, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(d.name,
+                          style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                      Text('${d.model} · ${d.ip}',
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                if (added)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 6),
+                    child: Icon(Icons.check_circle_rounded,
+                        color: AppColors.green, size: 22),
+                  )
+                else
+                  TextButton(
+                    onPressed: () => onAdd(d),
+                    style: TextButton.styleFrom(
+                        foregroundColor: _consumptionColor),
+                    child: const Text('Add',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+              ],
+            ),
+          );
+        }),
+        if (remaining.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 4, left: 2),
+            child: Text('All found plugs added ✓',
+                style: TextStyle(color: AppColors.green, fontSize: 12)),
+          ),
+      ],
+    );
+  }
+}
+
+class _ScanButton extends StatelessWidget {
+  final VoidCallback onScan;
+  final String label;
+  const _ScanButton({required this.onScan, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: onScan,
+        icon: const Icon(Icons.wifi_find_rounded, size: 18),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _consumptionColor,
+          side: BorderSide(color: _consumptionColor.withValues(alpha: 0.4)),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        label: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
       ),
     );
   }

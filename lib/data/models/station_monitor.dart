@@ -180,6 +180,34 @@ class InverterData {
   bool get hasFault   => errorCode != 0;
   bool get hasWarning => warningCode != 0 && errorCode == 0;
 
+  /// Parses [lastRefreshTime] into a DateTime. Handles both the
+  /// "yyyy-MM-dd HH:mm:ss" and "MM/dd/yyyy HH:mm:ss" forms GoodWe uses.
+  /// Returns null if it can't be parsed.
+  DateTime? get lastReportTime {
+    final s = lastRefreshTime.trim();
+    if (s.isEmpty) return null;
+    try {
+      final parts = s.split(' ');
+      final datePart = parts[0];
+      final timePart = parts.length > 1 ? parts[1] : '00:00:00';
+      final t = timePart.split(':');
+      final hh = t.isNotEmpty ? int.parse(t[0]) : 0;
+      final mm = t.length > 1 ? int.parse(t[1]) : 0;
+      final ss = t.length > 2 ? int.parse(t[2]) : 0;
+
+      if (datePart.contains('-')) {
+        final d = datePart.split('-'); // yyyy-MM-dd
+        return DateTime(
+            int.parse(d[0]), int.parse(d[1]), int.parse(d[2]), hh, mm, ss);
+      } else if (datePart.contains('/')) {
+        final d = datePart.split('/'); // MM/dd/yyyy
+        return DateTime(
+            int.parse(d[2]), int.parse(d[0]), int.parse(d[1]), hh, mm, ss);
+      }
+    } catch (_) {}
+    return null;
+  }
+
   String get statusLabel {
     if (errorCode != 0)   return 'Fault';
     if (warningCode != 0) return 'Warning';
